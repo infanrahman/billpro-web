@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { db, type Scale } from '../../../services/db';
+import { db, matchesActiveScope, type Scale } from '../../../services/db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNotification } from '../../../contexts/NotificationContext';
 import { scaleService } from '../../../services/scaleService';
@@ -8,12 +8,17 @@ import { Plus, Wifi, Upload, Download, RefreshCw, Trash2, Server, Search, Settin
 import ScalePluManager, { type PluRow } from '../../../components/Scale/ScalePluManager';
 import DeletePluModal from '../../../components/Scale/DeletePluModal';
 import ScaleHotkeyModal from '../../../components/Scale/ScaleHotkeyModal';
+import { useAuth } from '../../../contexts/AuthContext';
 
 const ScaleTab: React.FC = () => {
     const { t } = useTranslation();
     const { addToast } = useNotification();
+    const { canCreate, canUpdate, canDelete, activeCompanyId, activeBranchId, activeBranch } = useAuth();
 
-    const scales = useLiveQuery(() => db.scales.toArray());
+    const scales = useLiveQuery(
+        () => db.scales.filter(scale => matchesActiveScope(scale, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !scale.deletedAt).toArray(),
+        [activeCompanyId, activeBranchId, activeBranch?.isMaster]
+    );
 
     const [isAdding, setIsAdding] = useState(false);
     const [name, setName] = useState('');
@@ -31,6 +36,11 @@ const ScaleTab: React.FC = () => {
     const [deleteScaleId, setDeleteScaleId] = useState<string | null>(null);
 
     const handleScanNetwork = async () => {
+        if (!canUpdate('devices')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         if (!window.electron?.scanNetworkScales) {
             addToast('Network scanning not supported in this environment.', 'warning');
             return;
@@ -55,6 +65,11 @@ const ScaleTab: React.FC = () => {
 
     const handleAddScale = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!canCreate('scales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         try {
             const { createRecordMetadata } = await import('../../../services/db');
             await db.scales.add({
@@ -76,6 +91,11 @@ const ScaleTab: React.FC = () => {
     };
 
     const confirmDeleteScale = async () => {
+        if (!canDelete('scales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         if (deleteScaleId !== null) {
             await db.scales.delete(deleteScaleId);
             addToast(t('scales.delete_success', { defaultValue: 'Scale deleted.' }), 'success');
@@ -84,11 +104,19 @@ const ScaleTab: React.FC = () => {
     };
 
     const handleDeleteScale = (id: string) => {
+        if (!canDelete('scales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
         setDeleteScaleId(id);
     };
 
     const handleConfirmDeletePLU = async (pluNumber: string) => {
         if (!deletePluScale) return;
+        if (!canDelete('inventory') || !canUpdate('scales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
         setIsSyncing(deletePluScale.id!);
         try {
             const success = await scaleService.deletePLU(deletePluScale, pluNumber);
@@ -105,6 +133,11 @@ const ScaleTab: React.FC = () => {
     };
 
     const handleTestConnection = async (scale: Scale) => {
+        if (!canUpdate('scales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         setIsTesting(scale.id!);
         try {
             const result = await scaleService.testConnection(scale.ipAddress, scale.port);
@@ -124,9 +157,16 @@ const ScaleTab: React.FC = () => {
     };
 
     const handleFullSync = async (scale: Scale) => {
+        if (!canUpdate('scales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         setIsSyncing(scale.id!);
         try {
-            const items = await db.items.toArray();
+            const items = await db.items
+                .filter(item => matchesActiveScope(item, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !item.deletedAt)
+                .toArray();
             const result = await scaleService.uploadProducts(scale, items, true);
 
             if (result.success) {
@@ -142,10 +182,17 @@ const ScaleTab: React.FC = () => {
     };
 
     const handleIncrementalSync = async (scale: Scale) => {
+        if (!canUpdate('scales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         setIsSyncing(scale.id!);
         try {
             // For 'Upload Selected', we will currently just do an incremental sync of all items since there is no selection grid here yet
-            const items = await db.items.toArray();
+            const items = await db.items
+                .filter(item => matchesActiveScope(item, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !item.deletedAt)
+                .toArray();
             const result = await scaleService.uploadProducts(scale, items, false);
 
             if (result.success) {
@@ -161,6 +208,11 @@ const ScaleTab: React.FC = () => {
     };
 
     const handleTimeSync = async (scale: Scale) => {
+        if (!canUpdate('scales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         setIsSyncing(scale.id!);
         try {
             const success = await scaleService.syncTime(scale);
@@ -177,6 +229,11 @@ const ScaleTab: React.FC = () => {
     };
 
     const handleDownloadPLUs = async (scale: Scale) => {
+        if (!canUpdate('scales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         setIsSyncing(scale.id!);
         try {
             const result = await scaleService.downloadExistingPLUs(scale);
@@ -198,11 +255,20 @@ const ScaleTab: React.FC = () => {
     };
 
     const handleOpenManager = (scale: Scale) => {
+        if (!canUpdate('scales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
         setActiveScalePlus([]);
         setActiveScaleManager(scale);
     };
 
     const handleSaveManagerPlus = async (plus: PluRow[]) => {
+        if (!canCreate('inventory')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         try {
             const { createRecordMetadata } = await import('../../../services/db');
             const newItems = plus.map((p: any) => ({
@@ -220,7 +286,9 @@ const ScaleTab: React.FC = () => {
                 isWeighingScale: true
             }));
 
-            const existingItems = await db.items.toArray();
+            const existingItems = await db.items
+                .filter(item => matchesActiveScope(item, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !item.deletedAt)
+                .toArray();
             const existingBarcodes = new Set(existingItems.map((i: any) => i.barcode));
 
             const itemsToInsert = newItems.filter((item: any) => !existingBarcodes.has(item.barcode));
@@ -238,6 +306,11 @@ const ScaleTab: React.FC = () => {
 
     const handleApplyToScale = async (plus: PluRow[]) => {
         if (!activeScaleManager) return;
+        if (!canUpdate('scales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         setIsSyncing(activeScaleManager.id!);
         try {
             const { createRecordMetadata } = await import('../../../services/db');
@@ -278,10 +351,17 @@ const ScaleTab: React.FC = () => {
     };
 
     const handleBulkSync = async () => {
+        if (!canUpdate('scales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         setIsBulkSyncing(true);
         try {
-            const items = await db.items.toArray();
-            const result = await scaleService.bulkSyncAllScales(items);
+            const items = await db.items
+                .filter(item => matchesActiveScope(item, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !item.deletedAt)
+                .toArray();
+            const result = await scaleService.bulkSyncAllScales(items, scales || []);
 
             if (result.totalScales === 0) {
                 addToast(t('scales.no_scales', { defaultValue: 'No scales configured.' }), 'warning');

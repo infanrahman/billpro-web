@@ -14,55 +14,56 @@ import {
     DollarSign,
     Users,
     BookOpen,
-    FileSpreadsheet
+    FileSpreadsheet,
+    X
 } from 'lucide-react';
 import { useSettings } from '../../contexts/SettingsContext';
 import clsx from 'clsx';
 
-const Sidebar: React.FC = () => {
+interface SidebarProps {
+    isOpen: boolean;
+    onClose: () => void;
+}
+
+const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     const { user, logout, hasPermission } = useAuth();
     const { settings } = useSettings();
     const { t } = useTranslation();
     const role = user?.role || 'shopkeeper';
 
-    // Define links with required permission
     const allLinks = [
-        { to: '/', icon: LayoutDashboard, label: t('sidebar.dashboard'), permission: null }, // Always visible
-        { to: '/pos', icon: ShoppingCart, label: t('sidebar.pos'), permission: 'pos_access' },
-        { to: '/inventory', icon: Package, label: settings.cafeMode ? t('sidebar.menu', { defaultValue: 'Menu' }) : t('sidebar.inventory'), permission: 'inventory_view' },
-        { to: '/sales', icon: TrendingUp, label: t('sidebar.sales'), permission: 'sales_view' },
-        { to: '/expenses', icon: DollarSign, label: t('sidebar.expenses'), permission: 'expenses_view' }, // Decoupled
-        { to: '/purchase', icon: ShoppingBag, label: t('sidebar.purchase'), permission: 'purchases_view' },
-        { to: '/suppliers', icon: Package, label: t('sidebar.suppliers'), permission: 'suppliers_view' },
-        { to: '/reports', icon: FileText, label: t('sidebar.reports'), permission: 'reports_view' },
-        { to: '/cash-book', icon: BookOpen, label: t('sidebar.cashbook'), permission: 'cashbook_access' },
-        { to: '/customers', icon: Users, label: t('sidebar.customers'), permission: 'customers_view' },
+        { to: '/', icon: LayoutDashboard, label: t('sidebar.dashboard'), permission: null },
+        { to: '/pos', icon: ShoppingCart, label: t('sidebar.pos'), permission: 'pos.view' },
+        { to: '/inventory', icon: Package, label: settings.cafeMode ? t('sidebar.menu', { defaultValue: 'Menu' }) : t('sidebar.inventory'), permission: 'inventory.view' },
+        { to: '/sales', icon: TrendingUp, label: t('sidebar.sales'), permission: 'sales.view' },
+        { to: '/expenses', icon: DollarSign, label: t('sidebar.expenses'), permission: 'expenses.view' },
+        { to: '/purchase', icon: ShoppingBag, label: t('sidebar.purchase'), permission: 'purchases.view' },
+        { to: '/suppliers', icon: Package, label: t('sidebar.suppliers'), permission: 'suppliers.view' },
+        { to: '/reports', icon: FileText, label: t('sidebar.reports'), permission: 'reports.view' },
+        { to: '/cash-book', icon: BookOpen, label: t('sidebar.cashbook'), permission: 'cashbook.view' },
+        { to: '/customers', icon: Users, label: t('sidebar.customers'), permission: 'customers.view' },
         { to: '/spreadsheet', icon: FileSpreadsheet, label: t('sidebar.excel_sheet'), permission: null },
         { to: '/settings', icon: Settings, label: t('sidebar.settings'), permission: 'settings_any' },
     ];
 
     const links = allLinks.filter(link => {
         if (!link.permission) {
-            // Special case: Spreadsheet
             if (link.to === '/spreadsheet') return settings.enableSpreadsheet;
             return true;
         }
-
-        // Settings: visible for admin OR if any settings-related permission is granted
         if (link.permission === 'settings_any') {
             return role === 'admin'
-                || hasPermission('settings_general')
-                || hasPermission('settings_taxes')
-                || hasPermission('settings_invoice')
-                || hasPermission('settings_printers')
-                || hasPermission('settings_backup')
-                || hasPermission('users_manage');
+                || hasPermission('appSettings.view')
+                || hasPermission('businessProfile.update')
+                || hasPermission('invoiceSettings.update')
+                || hasPermission('devices.view')
+                || hasPermission('scales.view')
+                || hasPermission('backup.view')
+                || hasPermission('users.view');
         }
-
         return hasPermission(link.permission);
     });
 
-    // Focus Management
     const navRef = React.useRef<HTMLElement>(null);
 
     const handleKeyDown = (e: React.KeyboardEvent, index: number) => {
@@ -74,53 +75,87 @@ const Sidebar: React.FC = () => {
             e.preventDefault();
             const prev = document.getElementById(`sidebar-link-${index - 1}`);
             if (prev) (prev as HTMLElement).focus();
-        } else if (e.key === 'ArrowRight' || e.key === 'Enter') {
-            // Optional: Move to content?
-            // Enter automatically triggers click on links
         }
     };
 
+    if (!isOpen) return null;
+
     return (
-        <div className="h-screen w-64 bg-slate-900 border-r border-slate-800 flex flex-col shadow-xl z-20">
-            <div className="p-6 border-b border-slate-800 flex flex-col items-center">
-                <h1 className="text-xl font-bold text-white tracking-wide font-sans">
-                    Billing PRO
-                </h1>
-                <p className="text-xs text-slate-400 mt-1 uppercase tracking-wider">{user?.name || role}</p>
-            </div>
+        <>
+            {/* Backdrop */}
+            <div
+                onClick={onClose}
+                className="fixed inset-0 bg-slate-900/50 z-40 xl:hidden"
+            />
 
-            <nav ref={navRef} className="flex-1 overflow-y-auto p-4 space-y-1">
-                {links.map((link, index) => (
-                    <NavLink
-                        key={link.to}
-                        to={link.to}
-                        id={`sidebar-link-${index}`}
-                        onKeyDown={(e) => handleKeyDown(e, index)}
-                        className={({ isActive }) => clsx(
-                            "flex items-center gap-3 p-3 rounded-lg transition-all duration-200 outline-none focus:ring-2 focus:ring-blue-500 focus:bg-slate-800",
-                            isActive
-                                ? "bg-blue-600 text-white shadow-md shadow-blue-900/20"
-                                : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-                        )}
+            {/* Sidebar Panel */}
+            <div className="fixed inset-y-0 left-0 w-64 bg-[#101827] border-r border-slate-700/70 flex flex-col shadow-xl z-50 overflow-hidden">
+                {/* Header */}
+                <div className="px-4 py-4 border-b border-slate-700/70 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                        <h1 className="text-lg font-bold text-white leading-tight">
+                            BILLING PRO
+                        </h1>
+                        <p className="text-sm text-slate-300 mt-1 font-medium truncate">{user?.name || role}</p>
+                    </div>
+                    <button
+                        onClick={onClose}
+                        className="shrink-0 p-2 hover:bg-slate-800 rounded-lg text-slate-300 hover:text-white"
+                        aria-label="Close menu"
                     >
-                        <link.icon size={20} />
-                        <span className="font-medium text-sm">
-                            {link.label}
-                        </span>
-                    </NavLink>
-                ))}
-            </nav>
+                        <X size={19} />
+                    </button>
+                </div>
 
-            <div className="p-4 border-t border-slate-800">
-                <button
-                    onClick={logout}
-                    className="flex items-center gap-3 p-3 w-full rounded-lg text-slate-400 hover:bg-red-500/10 hover:text-red-400 transition-colors outline-none focus:ring-2 focus:ring-red-500"
-                >
-                    <LogOut size={20} />
-                    <span className="font-medium text-sm">{t('sidebar.logout')}</span>
-                </button>
+                {/* Nav links */}
+                <nav ref={navRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-1.5 custom-scrollbar">
+                    {links.map((link, index) => (
+                        <NavLink
+                            key={link.to}
+                            to={link.to}
+                            id={`sidebar-link-${index}`}
+                            onKeyDown={(e) => handleKeyDown(e, index)}
+                            onClick={onClose}
+                            className={({ isActive }) => clsx(
+                                "relative flex items-center gap-3 px-3.5 h-11 rounded-lg outline-none group border",
+                                isActive
+                                    ? "bg-blue-600/25 text-white border-blue-400/45 shadow-sm"
+                                    : "text-slate-200 border-transparent hover:bg-slate-800 hover:text-white hover:border-slate-700"
+                            )}
+                        >
+                            {({ isActive }) => (
+                                <>
+                                    {isActive && (
+                                        <div className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 bg-blue-400 rounded-r-full" />
+                                    )}
+                                    <link.icon
+                                        size={20}
+                                        className={clsx(
+                                            "shrink-0",
+                                            isActive ? "text-blue-300" : "text-slate-300 group-hover:text-white"
+                                        )}
+                                    />
+                                    <span className="font-semibold text-[15px] leading-none truncate">
+                                        {link.label}
+                                    </span>
+                                </>
+                            )}
+                        </NavLink>
+                    ))}
+                </nav>
+
+                {/* Logout */}
+                <div className="p-3 border-t border-slate-700/70 bg-[#0c1422]">
+                    <button
+                        onClick={logout}
+                        className="flex items-center gap-3 px-3.5 h-11 w-full rounded-lg text-slate-200 hover:bg-red-500/15 hover:text-red-300 border border-transparent hover:border-red-400/30 group"
+                    >
+                        <LogOut size={20} className="shrink-0" />
+                        <span className="font-semibold text-[15px]">{t('sidebar.logout')}</span>
+                    </button>
+                </div>
             </div>
-        </div>
+        </>
     );
 };
 

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Phone, FileText, Wallet, Trash2, Edit, AlertCircle } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, type CashEntry, softDeleteMetadata } from '../../services/db';
+import { db, matchesActiveScope, type CashEntry, softDeleteMetadata } from '../../services/db';
 import { formatCurrency } from '../../utils/currency';
 import { format } from 'date-fns';
 
@@ -20,16 +20,16 @@ interface PartyDetailsProps {
 const PartyDetails: React.FC<PartyDetailsProps> = ({ partyId, onBack }) => {
     const { t } = useTranslation();
     const { addToast } = useNotification();
-    const { activeBranchId } = useAuth();
+    const { canDelete, activeCompanyId, activeBranchId, activeBranch } = useAuth();
     
     const party = useLiveQuery(() => 
-        db.cashParties.where('id').equals(partyId).and((p: any) => !p.deletedAt && p.branchId === activeBranchId).first()
-    , [partyId, activeBranchId]);
+        db.cashParties.where('id').equals(partyId).and((p) => !p.deletedAt && matchesActiveScope(p, activeCompanyId, activeBranchId, activeBranch?.isMaster)).first()
+    , [partyId, activeCompanyId, activeBranchId, activeBranch?.isMaster]);
     
     const entries = useLiveQuery(async () => {
-        const data = await db.cashEntries.where('partyId').equals(partyId).and((e: any) => e.branchId === activeBranchId).toArray();
-        return data.filter((e: any) => !e.deletedAt).sort((a: any, b: any) => a.date.getTime() - b.date.getTime());
-    }, [partyId, activeBranchId]);
+        const data = await db.cashEntries.where('partyId').equals(partyId).and((e) => matchesActiveScope(e, activeCompanyId, activeBranchId, activeBranch?.isMaster)).toArray();
+        return data.filter((e) => !e.deletedAt).sort((a, b) => a.date.getTime() - b.date.getTime());
+    }, [partyId, activeCompanyId, activeBranchId, activeBranch?.isMaster]);
 
     const [isAddOpen, setIsAddOpen] = useState(false);
     const [entryType, setEntryType] = useState<'in' | 'out'>('in');
@@ -67,6 +67,10 @@ const PartyDetails: React.FC<PartyDetailsProps> = ({ partyId, onBack }) => {
 
     const handleDeleteParty = async () => {
         if (!party) return;
+        if (!canDelete('cashbook')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
 
         try {
             // Delete all entries for this party (Soft Delete)
@@ -90,6 +94,10 @@ const PartyDetails: React.FC<PartyDetailsProps> = ({ partyId, onBack }) => {
 
     const handleDeleteEntry = async () => {
         if (!entryToDelete || !entryToDelete.id) return;
+        if (!canDelete('cashbook')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
         try {
             await db.cashEntries.update(entryToDelete.id, softDeleteMetadata());
             addToast('Transaction deleted successfully', 'success');

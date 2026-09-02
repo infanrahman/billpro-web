@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Dexie from 'dexie';
-import { db, type Invoice, softDeleteMetadata } from '../../services/db';
+import { db, type Invoice, softDeleteMetadata, getCurrentBranchId, matchesActiveScope } from '../../services/db';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Search, Printer, Download, Trash2, RotateCcw, Eye, ShieldCheck, ShieldAlert, Clock, CreditCard } from 'lucide-react';
+import { Search, Printer, Download, Trash2, RotateCcw, Eye, ShieldCheck, ShieldAlert, Clock, CreditCard, RefreshCw, History } from 'lucide-react';
 import { generateInvoicePDF } from '../../services/invoiceGenerator';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useSettings } from '../../contexts/SettingsContext';
@@ -25,17 +25,28 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ onReturn }) => {
     const { t } = useTranslation();
     const navigate = useNavigate();
     const { addToast } = useNotification();
-    const { isAdmin, hasPermission, activeBranchId, activeBranch } = useAuth();
+    const { can, canUpdate, canDelete, activeCompanyId, activeBranchId, activeBranch } = useAuth();
     const { formatCurrency, formatDate, settings } = useSettings();
 
     // Check if ZATCA is enabled (LIVE or COMPLIANCE_OBTAINED)
-    const isZatcaEnabled = useMemo(() => {
-        try {
+    const [isZatcaEnabled, setIsZatcaEnabled] = useState(false);
+    useEffect(() => {
+        const checkZatca = async () => {
+            if (window.electron && window.electron.zatca) {
+                const cfg = await window.electron.zatca.getConfig();
+                if (cfg && (cfg.status === 'LIVE' || cfg.status === 'COMPLIANCE_OBTAINED')) {
+                    setIsZatcaEnabled(true);
+                    return;
+                }
+            }
+            // Fallback
             const cfg = localStorage.getItem('zatca_config');
-            if (!cfg) return false;
-            const { status } = JSON.parse(cfg);
-            return status === 'LIVE' || status === 'COMPLIANCE_OBTAINED';
-        } catch { return false; }
+            if (cfg) {
+                const { status } = JSON.parse(cfg);
+                setIsZatcaEnabled(status === 'LIVE' || status === 'COMPLIANCE_OBTAINED');
+            }
+        };
+        checkZatca();
     }, []);
 
     // Pagination & Filter State
@@ -81,8 +92,13 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ onReturn }) => {
         const endDateTime = endDate ? new Date(endDate).getTime() : Infinity;
 
         return collection.filter((inv: any) => {
+            // Skip orders (Pay Later) - only show invoices in History
+            if (inv.type === 'order') return false;
+
             // Skip soft-deleted records
             if (inv.deletedAt) return false;
+
+            if (!matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster)) return false;
 
             // Date range filter (use timestamps for fast comparison)
             const invTime = new Date(inv.createdAt).getTime();
@@ -97,7 +113,7 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ onReturn }) => {
 
             return true;
         }).toArray();
-    }, [search, startDate, endDate, activeBranchId, activeBranch?.isMaster]);
+    }, [search, startDate, endDate, activeCompanyId, activeBranchId, activeBranch?.isMaster]);
 
     // Client-side pagination (instant page switching, no re-query)
     const totalItems = allFilteredInvoices?.length || 0;
@@ -121,16 +137,123 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ onReturn }) => {
         }
     };
 
+    const [isRetryingZatca, setIsRetryingZatca] = useState<string | null>(null);
+
+    const handleRetryZatca = async (invoice: Invoice) => {
+        if (!can('zatca.submit')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
+        if (!invoice.id) return;
+        setIsRetryingZatca(invoice.id);
+        
+        try {
+            const saved = localStorage.getItem('businessDetails');
+            const safeBusinessDetails = saved ? JSON.parse(saved) : { name: 'My Shop', address: '', phone: '', email: '' };
+            const vatNumberRaw = safeBusinessDetails.gstin || safeBusinessDetails.vatNo || '';
+            const vatNumber = vatNumberRaw.trim();
+
+            if (!vatNumber) {
+                addToast('VAT Number is missing in Business Profile', 'error');
+                setIsRetryingZatca(null);
+                return;
+            }
+
+            const zatcaConfig = (window.electron && window.electron.zatca)
+                ? await window.electron.zatca.getConfig()
+                : JSON.parse(localStorage.getItem('zatca_config') || 'null');
+
+            if (!zatcaConfig || !zatcaConfig.privateKey) {
+                addToast('ZATCA Configuration is missing or incomplete', 'error');
+                setIsRetryingZatca(null);
+                return;
+            }
+
+            const isLive = zatcaConfig.status === 'LIVE';
+            const activeCsid = isLive ? zatcaConfig.productionCsid : zatcaConfig.complianceCsid;
+            const activeSecret = isLive ? zatcaConfig.productionSecret : zatcaConfig.complianceSecret;
+
+            if (!activeCsid || !activeSecret) {
+                 addToast('ZATCA CSID or secret is missing', 'error');
+                 setIsRetryingZatca(null);
+                 return;
+            }
+
+            const { generateZatcaXML } = await import('../../services/zatcaXml');
+            
+            const activeBranchId = getCurrentBranchId();
+            const branch = await db.branches.get(activeBranchId);
+            const currentPIH = branch?.lastInvoiceHash || 'NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWIyNGEyOTVRMzYxYzI4Y2I1MjM=';
+            const nextICV = (branch?.invoiceCounter || 0) + 1;
+
+            const result = await generateZatcaXML(
+                invoice,
+                { ...safeBusinessDetails, gstin: vatNumber },
+                zatcaConfig.privateKey,
+                activeCsid,
+                currentPIH,
+                nextICV
+            );
+
+            const { reportInvoice } = await import('../../services/zatcaApi');
+            const env = zatcaConfig.environment || 'PRODUCTION';
+
+            const reportResult = await reportInvoice(
+                result.xml,
+                result.hash,
+                result.uuid,
+                activeCsid,
+                activeSecret,
+                env
+            );
+
+            if (['REPORTED', 'REPORTED_WITH_WARNINGS'].includes(reportResult.status)) {
+                await db.branches.update(activeBranchId, {
+                    lastInvoiceHash: result.hash,
+                    invoiceCounter: nextICV
+                });
+                await db.invoices.update(invoice.id, {
+                    zatcaStatus: 'REPORTED',
+                    zatcaHash: result.hash,
+                    zatcaError: undefined
+                });
+                addToast('Invoice successfully reported to ZATCA', 'success');
+            } else {
+                const errMessage = reportResult.validationResults ? JSON.stringify(reportResult.validationResults) : 'Validation Error';
+                await db.invoices.update(invoice.id, { 
+                    zatcaStatus: 'ERROR',
+                    zatcaError: errMessage
+                });
+                addToast('Failed to report to ZATCA', 'error');
+            }
+        } catch (error: any) {
+            console.error("Manual ZATCA Retry Failed:", error);
+            addToast(`ZATCA Retry Failed: ${error.message}`, 'error');
+        } finally {
+            setIsRetryingZatca(null);
+        }
+    };
+
     // Delete Confirmation State
     const [invoiceToDelete, setInvoiceToDelete] = useState<string | null>(null);
     const [isDeleting, setIsDeleting] = useState(false);
 
     const handleDeleteClick = (id: string, e: React.MouseEvent) => {
         e.stopPropagation();
+        if (!canDelete('sales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
         setInvoiceToDelete(id);
     };
 
     const handleConfirmDelete = async () => {
+        if (!canDelete('sales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         if (invoiceToDelete) {
             setIsDeleting(true);
             try {
@@ -178,37 +301,43 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ onReturn }) => {
 
     return (
         <div className="space-y-6">
-            <h1 className="text-2xl font-bold dark:text-white">{t('transactions.title')}</h1>
+            <h1 className="text-2xl font-black dark:text-white uppercase tracking-tighter flex items-center gap-4">
+                <div className="p-3 bg-blue-600/10 text-blue-600 rounded-2xl">
+                    <History size={24} strokeWidth={2.5} />
+                </div>
+                {t('transactions.title')}
+            </h1>
 
-            <div className="bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 flex flex-wrap gap-4 items-center">
-                <div className="relative flex-1 min-w-[200px]">
+            <div className="bg-white/40 dark:bg-slate-800/20 backdrop-blur-2xl p-6 rounded-[2rem] shadow-2xl border border-white/50 dark:border-slate-700/30 flex flex-wrap gap-6 items-center relative overflow-hidden group">
+                <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/5 blur-[100px] -mr-32 -mt-32 pointer-events-none" />
+                <div className="relative flex-1 min-w-[200px] z-10">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
                     <input
                         type="text"
                         placeholder={t('transactions.search_placeholder')}
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-full pl-12 pr-4 py-3 rounded-2xl border border-slate-200/50 dark:border-slate-800 bg-white/50 dark:bg-slate-900/50 dark:text-white font-bold outline-none focus:ring-4 focus:ring-blue-500/10 transition-all text-sm"
                     />
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-4 z-10">
                     <div className="flex flex-col">
                         <label className="text-[10px] uppercase font-bold text-slate-400 pl-1">{t('transactions.from')}</label>
                         <input
                             type="datetime-local"
                             value={startDate}
                             onChange={(e) => setStartDate(e.target.value)}
-                            className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                            className="px-4 py-3 rounded-2xl border border-slate-200/50 dark:border-slate-800 bg-white/50 dark:bg-slate-900/50 dark:text-white font-bold outline-none focus:ring-4 focus:ring-blue-500/10 transition-all text-xs"
                         />
                     </div>
                     <div className="flex flex-col">
-                        <label className="text-[10px] uppercase font-bold text-slate-400 pl-1">{t('transactions.to')}</label>
+                        <label className="text-[10px] uppercase font-black text-slate-400 pl-1 tracking-widest">{t('transactions.to')}</label>
                         <input
                             type="datetime-local"
                             value={endDate}
                             onChange={(e) => setEndDate(e.target.value)}
-                            className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 dark:text-white outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                            className="px-4 py-3 rounded-2xl border border-slate-200/50 dark:border-slate-800 bg-white/50 dark:bg-slate-900/50 dark:text-white font-bold outline-none focus:ring-4 focus:ring-blue-500/10 transition-all text-xs"
                         />
                     </div>
                 </div>
@@ -217,35 +346,39 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ onReturn }) => {
                 {settings.enableExcelExport && (
                     <button
                         onClick={handleExportExcel}
-                        className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors ml-auto"
+                        className="flex items-center gap-3 px-6 py-3 bg-emerald-500 text-white rounded-[1.5rem] font-black text-xs uppercase tracking-widest shadow-2xl shadow-emerald-500/20 hover:scale-105 transition-all ml-auto z-10"
                     >
-                        <FileSpreadsheet size={18} />
-                        <span className="text-sm font-medium">{t('common.export_excel')}</span>
+                        <FileSpreadsheet size={18} strokeWidth={2.5} />
+                        <span>{t('common.export_excel')}</span>
                     </button>
                 )}
             </div>
 
-            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-                <div className="overflow-x-auto">
-                    <table className="w-full text-left whitespace-nowrap min-w-[800px]">
-                        <thead className="bg-slate-50 dark:bg-slate-900/50 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider border-b border-slate-200 dark:border-slate-700">
+            <div className="bg-white/40 dark:bg-slate-800/20 backdrop-blur-2xl rounded-[3rem] shadow-2xl border border-white/50 dark:border-slate-700/30 overflow-hidden">
+                <div className="overflow-x-auto custom-scrollbar">
+                    <table className="w-full text-left whitespace-nowrap min-w-[900px]">
+                        <thead className="bg-slate-900/[0.02] dark:bg-white/[0.02] border-b border-slate-200/50 dark:border-slate-700/50">
                             <tr>
-                                <th className="p-4 font-semibold">{t('transactions.invoice_no')}</th>
-                                <th className="p-4 font-semibold">{t('transactions.date')}</th>
-                                <th className="p-4 font-semibold">{t('transactions.customer')}</th>
-                                <th className="p-4 font-semibold">{t('transactions.amount')}</th>
-                                <th className="p-4 font-semibold">{t('transactions.payment')}</th>
-                                {isZatcaEnabled && <th className="p-4 font-semibold">ZATCA</th>}
-                                <th className="p-4 font-semibold text-right">{t('transactions.actions')}</th>
+                                <th className="p-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">{t('transactions.invoice_no')}</th>
+                                <th className="p-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">{t('transactions.date')}</th>
+                                <th className="p-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">{t('transactions.customer')}</th>
+                                <th className="p-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">{t('transactions.amount')}</th>
+                                <th className="p-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">{t('transactions.payment')}</th>
+                                {isZatcaEnabled && <th className="p-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">ZATCA</th>}
+                                <th className="p-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] text-right">{t('transactions.actions')}</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                        <tbody className="divide-y divide-slate-200/30 dark:divide-slate-700/30">
                             {filteredInvoices?.map((inv: any) => (
-                                <tr key={inv.id} className="group hover:bg-slate-50/80 dark:hover:bg-slate-700/30 transition-colors">
-                                    <td className="p-4 font-mono text-sm dark:text-slate-300">{inv.invoiceNumber}</td>
-                                    <td className="p-4 dark:text-slate-300 text-sm">{formatDate(inv.createdAt)}</td>
-                                    <td className="p-4 font-medium dark:text-white text-sm">{inv.customerName}</td>
-                                    <td className="p-4 font-bold text-slate-800 dark:text-white text-sm">{formatCurrency(inv.grandTotal)}</td>
+                                <tr key={inv.id} className="group hover:bg-blue-600/[0.02] dark:hover:bg-blue-400/[0.02] transition-all relative">
+                                    <td className="p-6">
+                                        <span className="font-mono text-[10px] font-black text-blue-600 dark:text-blue-400 bg-blue-500/5 px-3 py-1.5 rounded-full border border-blue-500/10">
+                                            {inv.invoiceNumber}
+                                        </span>
+                                    </td>
+                                    <td className="p-6 font-bold text-slate-600 dark:text-slate-400 text-xs">{formatDate(inv.createdAt)}</td>
+                                    <td className="p-6 font-black text-slate-800 dark:text-white uppercase text-xs tracking-tight">{inv.customerName}</td>
+                                    <td className="p-6 font-black text-slate-900 dark:text-white text-sm">{formatCurrency(inv.grandTotal)}</td>
                                     <td className="p-4">
                                         <span className={`px-2 py-1.5 rounded-md text-xs font-semibold uppercase border
                                         ${inv.type === 'return' ? 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-900/20 dark:text-amber-400 dark:border-amber-800' :
@@ -278,35 +411,46 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ onReturn }) => {
                                             )}
                                         </td>
                                     )}
-                                    <td className="p-4 flex gap-2 justify-end">
-                                        <button
-                                            onClick={() => setViewInvoice(inv)}
-                                            className="p-2 text-slate-500 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
-                                            title={t('transactions.view_details')}
-                                        >
+                                    <td className="p-6">
+                                        <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-all transform translate-x-4 group-hover:translate-x-0">
+                                            <button
+                                                onClick={() => setViewInvoice(inv)}
+                                                className="p-2.5 text-slate-400 hover:text-blue-500 hover:bg-white dark:hover:bg-slate-800 rounded-xl transition-all border border-transparent hover:border-slate-200 dark:hover:border-slate-700 shadow-sm"
+                                                title={t('transactions.view_details')}
+                                            >
                                             <Eye size={18} />
                                         </button>
-                                        {settings.cafeMode && inv.paymentStatus !== 'paid' && inv.type !== 'return' && (
+                                        {inv.paymentStatus !== 'paid' && inv.type !== 'return' && (
                                             <button
-                                                onClick={() => navigate('/pos', { state: { editInvoice: inv } })}
-                                                className="p-2 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"
+                                                onClick={() => navigate('/pos', { state: { editInvoice: inv, hidePayLater: true } })}
+                                                className="p-2.5 text-slate-400 hover:text-emerald-500 hover:bg-white dark:hover:bg-slate-800 rounded-xl transition-all border border-transparent hover:border-slate-200 dark:hover:border-slate-700 shadow-sm"
                                                 title="Proceed to Payment"
                                             >
                                                 <CreditCard size={18} />
                                             </button>
                                         )}
-                                        {hasPermission('sales_edit') && inv.type !== 'return' && (
+                                        {canUpdate('sales') && inv.type !== 'return' && (
                                             <button
                                                 onClick={() => onReturn && onReturn(inv)}
-                                                className="p-2 text-slate-500 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors"
+                                                className="p-2.5 text-slate-400 hover:text-amber-500 hover:bg-white dark:hover:bg-slate-800 rounded-xl transition-all border border-transparent hover:border-slate-200 dark:hover:border-slate-700 shadow-sm"
                                                 title="Return"
                                             >
                                                 <RotateCcw size={18} />
                                             </button>
                                         )}
+                                        {isZatcaEnabled && inv.zatcaStatus === 'ERROR' && (
+                                            <button
+                                                onClick={() => handleRetryZatca(inv)}
+                                                disabled={isRetryingZatca === inv.id}
+                                                className="p-2.5 text-slate-400 hover:text-indigo-500 hover:bg-white dark:hover:bg-slate-800 rounded-xl transition-all border border-transparent hover:border-slate-200 dark:hover:border-slate-700 shadow-sm disabled:opacity-50"
+                                                title="Retry ZATCA Submission"
+                                            >
+                                                <RefreshCw size={18} className={isRetryingZatca === inv.id ? "animate-spin" : ""} />
+                                            </button>
+                                        )}
                                         <button
                                             onClick={() => printInvoice(inv)}
-                                            className="p-2 text-slate-500 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
+                                            className="p-2.5 text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-white dark:hover:bg-slate-800 rounded-xl transition-all border border-transparent hover:border-slate-200 dark:hover:border-slate-700 shadow-sm"
                                             title={t('transactions.print_invoice')}
                                         >
                                             <Printer size={18} />
@@ -322,7 +466,7 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ onReturn }) => {
                                                     });
                                                 });
                                             }}
-                                            className="p-2 text-slate-500 hover:text-green-600 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
+                                            className="p-2.5 text-slate-400 hover:text-green-500 hover:bg-white dark:hover:bg-slate-800 rounded-xl transition-all border border-transparent hover:border-slate-200 dark:hover:border-slate-700 shadow-sm"
                                             title={t('transactions.download_pdf')}
                                         >
                                             <Download size={18} />
@@ -333,22 +477,25 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ onReturn }) => {
                                                     setSelectedInvoiceForShare(inv);
                                                     setShareModalOpen(true);
                                                 }}
-                                                className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
+                                                className="p-2.5 text-slate-400 hover:text-indigo-500 hover:bg-white dark:hover:bg-slate-800 rounded-xl transition-all border border-transparent hover:border-slate-200 dark:hover:border-slate-700 shadow-sm"
                                                 title="Share"
                                             >
                                                 <Send size={18} />
                                             </button>
                                         )}
-                                        {/* Delete: Admin OR sales_delete */}
-                                        {(isAdmin || hasPermission('sales_delete')) && (
-                                            <button
-                                                onClick={(e) => handleDeleteClick(inv.id!, e)}
-                                                className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
-                                                title={t('transactions.delete_invoice')}
-                                            >
-                                                <Trash2 size={18} />
-                                            </button>
+                                        {canDelete('sales') && (
+                                            <>
+                                                <div className="w-px h-6 bg-slate-200 dark:bg-slate-700 mx-1" />
+                                                <button
+                                                    onClick={(e) => handleDeleteClick(inv.id!, e)}
+                                                    className="p-2.5 text-slate-400 hover:text-rose-500 hover:bg-white dark:hover:bg-slate-800 rounded-xl transition-all border border-transparent hover:border-slate-200 dark:hover:border-slate-700 shadow-sm"
+                                                    title={t('transactions.delete_invoice')}
+                                                >
+                                                    <Trash2 size={18} />
+                                                </button>
+                                            </>
                                         )}
+                                        </div>
                                     </td>
                                 </tr>
                             ))}

@@ -1,22 +1,21 @@
 import React, { useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../../../services/db';
+import { db, matchesActiveScope } from '../../../services/db';
 import { format } from 'date-fns';
 import { Search, Shield } from 'lucide-react';
 import { useAuth } from '../../../contexts/AuthContext';
 
 const ActivityLogTab: React.FC = () => {
     const [searchTerm, setSearchTerm] = useState('');
-    const { activeBranchId, activeBranch } = useAuth();
+    const { activeCompanyId, activeBranchId, activeBranch } = useAuth();
 
     // Fetch last 100 logs
     const logs = useLiveQuery(() => {
-        const query = activeBranch?.isMaster ? db.activityLogs : db.activityLogs.where('branchId').equals(activeBranchId);
-        return (query as any)
-            .reverse()
-            .limit(100)
-            .toArray();
-    }, [activeBranchId, activeBranch?.isMaster]);
+        return db.activityLogs
+            .filter(log => matchesActiveScope(log, activeCompanyId, activeBranchId, activeBranch?.isMaster))
+            .toArray()
+            .then(rows => rows.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 100));
+    }, [activeCompanyId, activeBranchId, activeBranch?.isMaster]);
 
     const filteredLogs = logs?.filter((log: any) =>
         log.username.toLowerCase().includes(searchTerm.toLowerCase()) ||

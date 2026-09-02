@@ -1,5 +1,8 @@
 import { db } from './db';
 
+// Current backup format version — bump this when schema changes
+const BACKUP_VERSION = '1.2.0';
+
 export interface BackupData {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     items: any[];
@@ -33,11 +36,38 @@ export interface BackupData {
     spreadsheets?: any[];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     scales?: any[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    branches?: any[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    shifts?: any[];
     businessDetails: string | null;
     printerConfig: string | null;
     timestamp: number;
     version: string;
 }
+
+// Fix #2 & #3: Strict schema validation — checks required fields are arrays
+const validateBackupData = (data: unknown): data is BackupData => {
+    if (!data || typeof data !== 'object') return false;
+    const d = data as Record<string, unknown>;
+
+    // Required top-level array fields
+    const requiredArrayFields = ['items', 'invoices', 'expenses', 'purchases', 'customers', 'suppliers', 'customerPayments', 'users'];
+    for (const field of requiredArrayFields) {
+        if (!Array.isArray(d[field])) {
+            console.error(`Backup validation failed: "${field}" is missing or not an array.`);
+            return false;
+        }
+    }
+
+    // Timestamp must be a finite number
+    if (typeof d['timestamp'] !== 'number' || !isFinite(d['timestamp'] as number)) {
+        console.error('Backup validation failed: "timestamp" is invalid.');
+        return false;
+    }
+
+    return true;
+};
 
 export const generateBackupData = async (): Promise<string> => {
     const exportData: BackupData = {
@@ -57,36 +87,51 @@ export const generateBackupData = async (): Promise<string> => {
         categories: await db.categories.toArray(),
         spreadsheets: await db.spreadsheets.toArray(),
         scales: await db.scales.toArray(),
+        branches: await db.branches.toArray(),
+        shifts: await db.shifts.toArray(),
         businessDetails: localStorage.getItem('businessDetails'),
         printerConfig: localStorage.getItem('printerConfig'),
         timestamp: Date.now(),
-        version: '1.2.0'
+        version: BACKUP_VERSION  // Fix #17: use constant, not hardcoded string
     };
     return JSON.stringify(exportData, null, 2);
 };
 
 export const restoreBackupData = async (jsonContent: string) => {
-    const data = JSON.parse(jsonContent);
+    let data: unknown;
+    try {
+        data = JSON.parse(jsonContent);
+    } catch {
+        throw new Error('Invalid backup file: could not parse JSON.');
+    }
 
-    // Validate structure
-    if (!data.items || !data.invoices) throw new Error('Invalid backup file structure');
+    // Fix #2: Validate structure before touching the DB
+    if (!validateBackupData(data)) {
+        throw new Error('Invalid backup file: required fields are missing or malformed.');
+    }
 
-    // Helper function to insert only missing records (Prevent overwriting/duplicating)
-    const safeAddMissing = async (table: any, items: any[]) => {
+    // Fix #3: Use actual Dexie primary keys instead of hardcoding `.id`
+    // safeAddMissing uses the table's own primaryKeys() — works for all key types
+    const safeAddMissing = async (table: ReturnType<typeof db.table>, items: unknown[]) => {
         if (!items || items.length === 0) return;
-        
-        // Grab all existing IDs to check against
-        const existingIds = new Set(await table.toCollection().primaryKeys());
-        
-        // Filter out items that already exist in the database
-        const newItems = items.filter((item: any) => !existingIds.has(item.id));
-        
+
+        // Fetch all existing primary key values from the table
+        const existingKeys = new Set(await table.toCollection().primaryKeys());
+
+        // Get this table's primary key field name from Dexie's schema
+        const pkField = table.schema.primKey.keyPath as string ?? 'id';
+
+        // Filter to only new records
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const newItems = (items as any[]).filter((item: any) => !existingKeys.has(item[pkField]));
+
         if (newItems.length > 0) {
             await table.bulkAdd(newItems);
         }
     };
 
     // Helper to fix dates
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fixDates = (arr: any[], dateFields: string[]) => arr.map((item: any) => {
         const newItem = { ...item };
         dateFields.forEach(f => {
@@ -100,9 +145,9 @@ export const restoreBackupData = async (jsonContent: string) => {
         db.customers, db.suppliers, db.customerPayments,
         db.users, db.notifications, db.activityLogs,
         db.cashEntries, db.cashParties, db.purchasePayments,
-        db.categories, db.spreadsheets, db.scales
+        db.categories, db.spreadsheets, db.scales, db.branches, db.shifts
     ], async () => {
-        
+
         // Merge strategy: Add records that don't already exist locally.
         await safeAddMissing(db.items, data.items || []);
         await safeAddMissing(db.invoices, fixDates(data.invoices || [], ['createdAt', 'dueDate']));
@@ -120,54 +165,84 @@ export const restoreBackupData = async (jsonContent: string) => {
         await safeAddMissing(db.categories, data.categories || []);
         await safeAddMissing(db.spreadsheets, fixDates(data.spreadsheets || [], ['createdAt']));
         await safeAddMissing(db.scales, data.scales || []);
+        await safeAddMissing(db.branches, data.branches || []);
+        await safeAddMissing(db.shifts, fixDates(data.shifts || [], ['startTime', 'endTime']));
 
         // Optional: Overwrite settings if user imports them
         if (data.businessDetails) {
-            localStorage.setItem('businessDetails', data.businessDetails);
+            const detailsStr = typeof data.businessDetails === 'string'
+                ? data.businessDetails
+                : JSON.stringify(data.businessDetails);
+            localStorage.setItem('businessDetails', detailsStr);
         }
         if (data.printerConfig) {
-            localStorage.setItem('printerConfig', data.printerConfig);
+            const printerStr = typeof data.printerConfig === 'string'
+                ? data.printerConfig
+                : JSON.stringify(data.printerConfig);
+            localStorage.setItem('printerConfig', printerStr);
         }
     });
+
+    // Ensure a valid branch is selected after restore
+    const currentBranchId = localStorage.getItem('currentBranchId');
+    const dbBranches = await db.branches.toArray();
+    if (dbBranches.length > 0) {
+        const exists = dbBranches.some(b => b.id === currentBranchId);
+        if (!exists) {
+            localStorage.setItem('currentBranchId', dbBranches[0].id);
+        }
+    }
 
     return true;
 };
 
-export const checkAndPerformAutoBackup = async () => {
+// Fix #1 & #10: Returns a result object so the caller can show user-facing notifications.
+export type AutoBackupResult = 
+    | { status: 'skipped'; reason: 'disabled' | 'no_path' | 'not_due' | 'no_electron' }
+    | { status: 'success'; timestamp: number }
+    | { status: 'error'; message: string };
+
+export const checkAndPerformAutoBackup = async (): Promise<AutoBackupResult> => {
     try {
         const enabled = localStorage.getItem('autoBackupEnabled') === 'true';
         const path = localStorage.getItem('autoBackupPath');
         const lastBackup = localStorage.getItem('lastAutoBackupTime');
 
-        if (!enabled || !path) return;
+        if (!enabled) return { status: 'skipped', reason: 'disabled' };
+        if (!path)    return { status: 'skipped', reason: 'no_path' };
 
         const now = Date.now();
         const twentyFourHours = 24 * 60 * 60 * 1000;
 
         // If never backed up, or last backup was > 24 hours ago
-        if (!lastBackup || (now - parseInt(lastBackup)) > twentyFourHours) {
-            console.log('Performing Automatic Backup...');
+        if (lastBackup && (now - parseInt(lastBackup)) <= twentyFourHours) {
+            return { status: 'skipped', reason: 'not_due' };
+        }
 
-            // Check if electron API is available
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const electron = (window as any).electron;
-            if (!electron || !electron.saveAutoBackup) {
-                console.warn('Auto Backup skipped: Electron API not available');
-                return;
-            }
+        console.log('Performing Automatic Backup...');
 
-            const data = await generateBackupData();
-            const success = await electron.saveAutoBackup(path, data);
+        // Check if electron API is available
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const electron = (window as any).electron;
+        if (!electron || !electron.saveAutoBackup) {
+            console.warn('Auto Backup skipped: Electron API not available');
+            return { status: 'skipped', reason: 'no_electron' };
+        }
 
-            if (success) {
-                localStorage.setItem('lastAutoBackupTime', now.toString());
-                console.log('Auto Backup Success');
+        const data = await generateBackupData();
+        const success = await electron.saveAutoBackup(path, data);
 
-            } else {
-                console.error('Auto Backup Failed to save file');
-            }
+        if (success) {
+            localStorage.setItem('lastAutoBackupTime', now.toString());
+            console.log('Auto Backup Success');
+            return { status: 'success', timestamp: now };
+        } else {
+            console.error('Auto Backup Failed to save file');
+            return { status: 'error', message: 'Failed to write backup file. Check folder permissions.' };
         }
     } catch (error) {
+        const msg = error instanceof Error ? error.message : 'Unknown error';
         console.error('Auto Backup Error:', error);
+        return { status: 'error', message: msg };
     }
 };

@@ -1,19 +1,28 @@
 import Dexie, { type Table } from 'dexie';
 import { v4 as uuidv4 } from 'uuid';
 
+export const DEFAULT_COMPANY_ID = '11111111-1111-1111-1111-111111111111';
+export const DEFAULT_BRANCH_ID = '00000000-0000-0000-0000-000000000000';
+
+export const getCurrentCompanyId = () => {
+    const saved = localStorage.getItem('currentCompanyId');
+    if (saved) return saved;
+    localStorage.setItem('currentCompanyId', DEFAULT_COMPANY_ID);
+    return DEFAULT_COMPANY_ID;
+};
+
 // Helper to get current branch ID (Placeholder until Phase 4)
 export const getCurrentBranchId = () => {
     const saved = localStorage.getItem('currentBranchId');
     if (saved) return saved;
-    // Default/Master Branch ID - for single store setup
-    const defaultId = '00000000-0000-0000-0000-000000000000';
-    if (!saved) localStorage.setItem('currentBranchId', defaultId);
-    return saved || defaultId;
+    localStorage.setItem('currentBranchId', DEFAULT_BRANCH_ID);
+    return DEFAULT_BRANCH_ID;
 };
 
 // Helper to create record metadata
 export const createRecordMetadata = () => ({
     id: uuidv4(),
+    companyId: getCurrentCompanyId(),
     branchId: getCurrentBranchId(),
     updatedAt: new Date()
 });
@@ -34,10 +43,45 @@ export const markUpdated = () => ({
     updatedAt: new Date()
 });
 
+export const recordCompanyId = (record: { companyId?: string }) => record.companyId || DEFAULT_COMPANY_ID;
+
+export const recordBranchId = (record: { branchId?: string }) => record.branchId || DEFAULT_BRANCH_ID;
+
+export const matchesActiveScope = (
+    record: { companyId?: string; branchId?: string },
+    activeCompanyId: string,
+    activeBranchId: string,
+    isMasterBranch?: boolean,
+) => {
+    if (isMasterBranch) {
+        return recordCompanyId(record) === activeCompanyId;
+    }
+
+    return recordCompanyId(record) === activeCompanyId && recordBranchId(record) === activeBranchId;
+};
+
 // Base interface for all entities
 export interface SyncEntity {
     id: string; // UUID v4
+    companyId?: string;
     branchId: string;
+    updatedAt: Date;
+    deletedAt?: Date;
+}
+
+export interface Company {
+    id: string;
+    name: string;
+    legalName?: string;
+    vatNumber?: string;
+    crNumber?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+    country?: string;
+    logoUrl?: string;
+    status: 'active' | 'inactive';
+    createdAt: Date;
     updatedAt: Date;
     deletedAt?: Date;
 }
@@ -108,6 +152,8 @@ export interface Invoice extends SyncEntity {
     createdAt: Date;
     zatcaStatus?: 'REPORTED' | 'ERROR' | 'PENDING'; // New: ZATCA Reporting Status
     zatcaHash?: string; // New: XML Hash
+    zatcaError?: string; // New: Detailed error message
+    shiftId?: string; // New: Link to drawer session
 }
 
 export interface InvoiceItem {
@@ -169,9 +215,17 @@ export interface Purchase extends SyncEntity {
 export interface User extends SyncEntity {
     username: string;
     password?: string;
+    salt?: string; // For PBKDF2
+    isHashed?: boolean; // Flag for migration
+    iterations?: number; // PBKDF2 iterations count
     role: 'admin' | 'shopkeeper';
     name: string;
-    permissions?: string[]; // New: Granular permissions e.g. ['sales', 'inventory']
+    permissions?: string[]; 
+    companyIds?: string[];
+    branchIds?: string[];
+    defaultCompanyId?: string;
+    defaultBranchId?: string;
+    forcePasswordChange?: boolean; // For default admin hardening
 }
 
 export interface Notification extends SyncEntity {
@@ -243,15 +297,47 @@ export interface PurchasePayment extends SyncEntity {
 }
 
 // Spreadsheet Interface
+export interface SpreadsheetCellStyle {
+    bold?: boolean;
+    align?: 'left' | 'center' | 'right';
+    color?: string;
+    bgColor?: string;
+    fontSize?: 'sm' | 'base' | 'lg' | 'xl';
+    wrapText?: boolean;
+    format?: 'text' | 'number' | 'currency' | 'percentage' | 'date';
+    border?: boolean;
+}
+
 export interface SpreadsheetData extends SyncEntity {
     name: string;
-    data: string[][];
+    description?: string;
+    data: unknown[][];
     headers: string[];
-    styles: Record<string, any>;
+    styles: Record<string, SpreadsheetCellStyle>;
     colWidths: Record<number, number>;
     rowHeights: Record<number, number>;
     createdAt: Date;
 }
+
+
+// Shift Management Interface
+export interface Shift extends SyncEntity {
+    userId: string;
+    username: string;
+    openTime: Date;
+    closeTime?: Date;
+    openingFloat: number; // Starting cash
+    actualCash?: number; // Reported cash at end
+    expectedCash?: number; // Calculated (float + cash sales + cash entries)
+    totalCashSales: number;
+    totalCardSales: number;
+    totalUpiSales: number;
+    totalCreditSales: number;
+    status: 'open' | 'closed';
+    notes?: string;
+}
+
+
 
 // Weighing Scale Interface
 export interface Scale extends SyncEntity {
@@ -275,6 +361,7 @@ export interface ScaleSyncLog extends SyncEntity {
 
 // Branch Interface
 export interface Branch extends SyncEntity {
+    companyId: string;
     name: string;
     location: string; // Address
     phone: string;
@@ -290,10 +377,16 @@ export interface Branch extends SyncEntity {
     terms?: string;
     isMaster: boolean; // Only one master branch usually
     status: 'active' | 'inactive';
+    // ZATCA Chaining (Phase 2)
+    lastInvoiceHash?: string; // PIH
+    invoiceCounter?: number;   // ICV
+    primaryTitle?: string;
+    secondaryTitle?: string;
 }
 
 // Database Class
 class AppDatabase extends Dexie {
+    companies!: Table<Company>;
     branches!: Table<Branch>;
     items!: Table<Item>;
     customers!: Table<Customer>;
@@ -312,6 +405,7 @@ class AppDatabase extends Dexie {
     scales!: Table<Scale>; // New Table v16
     categories!: Table<Category>; // New Table v17
     scaleLogs!: Table<ScaleSyncLog>; // New Table v18
+    shifts!: Table<Shift>; // New: Shift Management
 
     constructor() {
         super('MyShopDB'); // Ensuring name is consistent with what was likely used or acceptable
@@ -424,71 +518,92 @@ class AppDatabase extends Dexie {
             const now = new Date();
 
             const tables = [
-                'items', 'customers', 'customerPayments', 'invoices', 'expenses', 
+                'branches', 'items', 'customers', 'customerPayments', 'invoices', 'expenses', 
                 'purchases', 'purchasePayments', 'suppliers', 'users', 'activityLogs', 
                 'notifications', 'cashEntries', 'cashParties', 'spreadsheets', 'scales', 
-                'categories', 'scaleLogs', 'branches'
+                'categories', 'scaleLogs'
             ];
 
+            // Global map of TableName -> Map(OldID -> NewUUID)
+            const globalIdMap = new Map<string, Map<number, string>>();
+
+            // PASS 1: Generate new UUIDs for all records across all tables
             for (const tableName of tables) {
                 const table = tx.table(tableName);
                 const records = await table.toArray();
+                const tableIdMap = new Map<number, string>();
                 
-                // Map of old Number ID -> new UUID String
-                const idMap = new Map<number, string>();
-                
-                // 1. Generate new UUIDs for all records
                 for (const record of records) {
                     if (typeof record.id === 'number') {
                         const newId = uuidv4();
-                        idMap.set(record.id, newId);
-                        record.id = newId;
+                        tableIdMap.set(record.id, newId);
+                    }
+                }
+                globalIdMap.set(tableName, tableIdMap);
+            }
+
+            // PASS 2: Apply remapping and save
+            for (const tableName of tables) {
+                const table = tx.table(tableName);
+                const records = await table.toArray();
+                const tableIdMap = globalIdMap.get(tableName);
+
+                for (const record of records) {
+                    // Update main ID
+                    if (tableIdMap && tableIdMap.has(record.id)) {
+                        record.id = tableIdMap.get(record.id);
                         record.branchId = branchId;
                         record.updatedAt = now;
                     }
-                }
 
-                // 2. Update Foreign Keys (Special logic by table)
-                for (const record of records) {
+                    // Map Foreign Keys
                     if (tableName === 'items') {
-                        if (typeof record.supplierId === 'number') record.supplierId = idMap.get(record.supplierId) || String(record.supplierId);
-                        if (typeof record.categoryId === 'number') record.categoryId = idMap.get(record.categoryId) || String(record.categoryId);
+                        if (typeof record.supplierId === 'number') record.supplierId = globalIdMap.get('suppliers')?.get(record.supplierId) || String(record.supplierId);
+                        if (typeof record.categoryId === 'number') record.categoryId = globalIdMap.get('categories')?.get(record.categoryId) || String(record.categoryId);
                     }
                     if (tableName === 'customerPayments') {
-                        if (typeof record.customerId === 'number') record.customerId = idMap.get(record.customerId) || String(record.customerId);
+                        if (typeof record.customerId === 'number') record.customerId = globalIdMap.get('customers')?.get(record.customerId) || String(record.customerId);
                     }
                     if (tableName === 'invoices') {
-                        if (typeof record.customerId === 'number') record.customerId = idMap.get(record.customerId) || String(record.customerId);
-                        record.items?.forEach((item: any) => {
-                            if (typeof item.itemId === 'number') item.itemId = idMap.get(item.itemId) || String(item.itemId);
+                        if (typeof record.customerId === 'number') record.customerId = globalIdMap.get('customers')?.get(record.customerId) || String(record.customerId);
+                        record.items?.forEach((item: { itemId: unknown }) => {
+                            if (typeof item.itemId === 'number') item.itemId = globalIdMap.get('items')?.get(item.itemId) || String(item.itemId);
                         });
                     }
                     if (tableName === 'purchases') {
-                        if (typeof record.supplierId === 'number') record.supplierId = idMap.get(record.supplierId) || String(record.supplierId);
-                        if (typeof record.relatedOrderId === 'number') record.relatedOrderId = idMap.get(record.relatedOrderId) || String(record.relatedOrderId);
-                        record.items?.forEach((item: any) => {
-                            if (typeof item.itemId === 'number') item.itemId = idMap.get(item.itemId) || String(item.itemId);
+                        if (typeof record.supplierId === 'number') record.supplierId = globalIdMap.get('suppliers')?.get(record.supplierId) || String(record.supplierId);
+                        if (typeof record.relatedOrderId === 'number') record.relatedOrderId = globalIdMap.get('invoices')?.get(record.relatedOrderId) || String(record.relatedOrderId);
+                        record.items?.forEach((item: { itemId: unknown }) => {
+                            if (typeof item.itemId === 'number') item.itemId = globalIdMap.get('items')?.get(item.itemId) || String(item.itemId);
                         });
                     }
                     if (tableName === 'purchasePayments') {
-                        if (typeof record.purchaseId === 'number') record.purchaseId = idMap.get(record.purchaseId) || String(record.purchaseId);
-                        if (typeof record.supplierId === 'number') record.supplierId = idMap.get(record.supplierId) || String(record.supplierId);
+                        if (typeof record.purchaseId === 'number') record.purchaseId = globalIdMap.get('purchases')?.get(record.purchaseId) || String(record.purchaseId);
+                        if (typeof record.supplierId === 'number') record.supplierId = globalIdMap.get('suppliers')?.get(record.supplierId) || String(record.supplierId);
                     }
                     if (tableName === 'activityLogs') {
-                        if (typeof record.userId === 'number') record.userId = idMap.get(record.userId) || String(record.userId);
+                        if (typeof record.userId === 'number') record.userId = globalIdMap.get('users')?.get(record.userId) || String(record.userId);
                     }
                     if (tableName === 'notifications') {
-                        if (typeof record.referenceId === 'number') record.referenceId = idMap.get(record.referenceId) || String(record.referenceId);
+                        if (typeof record.referenceId === 'number') {
+                             // Try matching across common referenced tables
+                             const refId = record.referenceId;
+                             record.referenceId = globalIdMap.get('invoices')?.get(refId) || 
+                                                globalIdMap.get('items')?.get(refId) || 
+                                                globalIdMap.get('customerPayments')?.get(refId) || 
+                                                String(refId);
+                        }
                     }
                     if (tableName === 'cashEntries') {
-                        if (typeof record.partyId === 'number') record.partyId = idMap.get(record.partyId) || String(record.partyId);
+                        if (typeof record.partyId === 'number') record.partyId = globalIdMap.get('cashParties')?.get(record.partyId) || String(record.partyId);
                     }
                 }
 
-                // 3. Save migrated records back to the table
+                // 3. Save migrated records back to the table atomicity
                 await table.clear();
                 await table.bulkAdd(records);
             }
+            console.log("Database successfully migrated to Version 20 (UUID with preserved relations)");
             console.log("Database successfully migrated to Version 20 (UUID & Cloud Sync Foundation)");
         });
 
@@ -499,14 +614,154 @@ class AppDatabase extends Dexie {
 
         // Version 22: Final Cleanup
         this.version(22).stores({});
+
+        // Version 23: Shift Management
+        this.version(23).stores({
+            shifts: '++id, userId, status, branchId',
+            invoices: '++id, invoiceNumber, customerId, createdAt, type, paymentStatus, status, zatcaStatus, branchId, shiftId'
+        });
+
+        // Version 24: Restore optimized compound index missing in v23
+        this.version(24).stores({
+            invoices: '++id, invoiceNumber, customerId, createdAt, type, paymentStatus, status, zatcaStatus, branchId, shiftId, [branchId+createdAt]'
+        });
+
+        // Version 25: Stable fully-declared single-store database schema (no branch scoping needed)
+        this.version(25).stores({
+            branches: '++id, name, status',
+            items: '++id, name, barcode, itemCode, categoryId, stock, branchId',
+            customers: '++id, name, phone, branchId',
+            customerPayments: '++id, customerId, date, branchId',
+            invoices: '++id, invoiceNumber, customerId, createdAt, type, paymentStatus, status, zatcaStatus, branchId, shiftId, [branchId+createdAt]',
+            expenses: '++id, category, date, branchId',
+            purchases: '++id, orderNumber, supplierId, date, status, type, branchId',
+            purchasePayments: '++id, supplierId, date, purchaseId, branchId',
+            suppliers: '++id, name, phone, branchId',
+            users: '++id, username, role, branchId',
+            activityLogs: '++id, userId, action, timestamp, branchId',
+            notifications: '++id, type, date, read, branchId',
+            cashEntries: '++id, type, date, category, partyId, branchId',
+            cashParties: '++id, name, type, branchId',
+            spreadsheets: '++id, name, createdAt, branchId',
+            scales: '++id, name, ipAddress, status, branchId',
+            categories: '++id, name, branchId',
+            scaleLogs: '++id, scaleIp, action, pluNo, status, createdAt, branchId',
+            shifts: '++id, userId, status, branchId'
+        });
+
+        // Version 26: Company foundation and branch/user scope.
+        this.version(26).stores({
+            companies: '++id, name, status',
+            branches: '++id, name, status, companyId, [companyId+status]',
+            items: '++id, name, barcode, itemCode, categoryId, stock, branchId, companyId',
+            customers: '++id, name, phone, branchId, companyId',
+            customerPayments: '++id, customerId, date, branchId, companyId',
+            invoices: '++id, invoiceNumber, customerId, createdAt, type, paymentStatus, status, zatcaStatus, branchId, companyId, shiftId, [branchId+createdAt], [companyId+createdAt]',
+            expenses: '++id, category, date, branchId, companyId',
+            purchases: '++id, orderNumber, supplierId, date, status, type, branchId, companyId',
+            purchasePayments: '++id, supplierId, date, purchaseId, branchId, companyId',
+            suppliers: '++id, name, phone, branchId, companyId',
+            users: '++id, username, role, branchId, companyId',
+            activityLogs: '++id, userId, action, timestamp, branchId, companyId',
+            notifications: '++id, type, date, read, branchId, companyId',
+            cashEntries: '++id, type, date, category, partyId, branchId, companyId',
+            cashParties: '++id, name, type, branchId, companyId',
+            spreadsheets: '++id, name, createdAt, branchId, companyId',
+            scales: '++id, name, ipAddress, status, branchId, companyId',
+            categories: '++id, name, branchId, companyId',
+            scaleLogs: '++id, scaleIp, action, pluNo, status, createdAt, branchId, companyId',
+            shifts: '++id, userId, status, branchId, companyId'
+        }).upgrade(async tx => {
+            const now = new Date();
+            const companies = tx.table('companies');
+            const branches = tx.table('branches');
+
+            const existingCompany = await companies.get(DEFAULT_COMPANY_ID);
+            if (!existingCompany) {
+                await companies.add({
+                    id: DEFAULT_COMPANY_ID,
+                    name: 'Default Company',
+                    legalName: 'Default Company',
+                    country: 'Saudi Arabia',
+                    status: 'active',
+                    createdAt: now,
+                    updatedAt: now
+                });
+            }
+
+            const existingBranch = await branches.get(DEFAULT_BRANCH_ID);
+            if (!existingBranch) {
+                await branches.add({
+                    id: DEFAULT_BRANCH_ID,
+                    companyId: DEFAULT_COMPANY_ID,
+                    name: 'Default Store',
+                    location: '',
+                    phone: '',
+                    isMaster: true,
+                    status: 'active',
+                    country: 'Saudi Arabia',
+                    taxName: 'VAT',
+                    taxRate: 15,
+                    updatedAt: now,
+                    branchId: DEFAULT_BRANCH_ID
+                });
+            }
+
+            const scopedTables = [
+                'branches', 'items', 'customers', 'customerPayments', 'invoices', 'expenses',
+                'purchases', 'purchasePayments', 'suppliers', 'users', 'activityLogs',
+                'notifications', 'cashEntries', 'cashParties', 'spreadsheets', 'scales',
+                'categories', 'scaleLogs', 'shifts'
+            ];
+
+            for (const tableName of scopedTables) {
+                const table = tx.table(tableName);
+                const records = await table.toArray();
+                for (const record of records) {
+                    record.companyId = record.companyId || DEFAULT_COMPANY_ID;
+                    record.branchId = record.branchId || DEFAULT_BRANCH_ID;
+                    record.updatedAt = record.updatedAt || now;
+
+                    if (tableName === 'users') {
+                        record.companyIds = record.companyIds?.length ? record.companyIds : [DEFAULT_COMPANY_ID];
+                        record.branchIds = record.branchIds?.length ? record.branchIds : [DEFAULT_BRANCH_ID];
+                        record.defaultCompanyId = record.defaultCompanyId || DEFAULT_COMPANY_ID;
+                        record.defaultBranchId = record.defaultBranchId || DEFAULT_BRANCH_ID;
+                    }
+                }
+                if (records.length) {
+                    await table.bulkPut(records);
+                }
+            }
+        });
+
     }
 }
 
 export const db = new AppDatabase();
 
+// Request persistent storage status to protect against silent browser evictions under storage pressure
+if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persist) {
+    navigator.storage.persist().then(persistent => {
+        if (persistent) {
+            console.log("Database persistent storage status: GRANTED. Chromium will not evict database.");
+        } else {
+            console.warn("Database persistent storage status: DENIED. Database could be evicted under low disk conditions.");
+        }
+    }).catch(err => {
+        console.error("Failed to request database storage persistence:", err);
+    });
+}
+
 // Factory Reset Function
 export const resetApplicationData = async () => {
-    await db.transaction('rw', [db.items, db.customers, db.customerPayments, db.invoices, db.expenses, db.purchases, db.suppliers, db.users, db.activityLogs, db.notifications, db.cashEntries, db.cashParties, db.spreadsheets, db.scales, db.categories, db.branches], async () => {
+    await db.transaction('rw', [
+        db.companies,
+        db.items, db.customers, db.customerPayments, db.invoices, db.expenses,
+        db.purchases, db.purchasePayments, db.suppliers, db.users, db.activityLogs,
+        db.notifications, db.cashEntries, db.cashParties, db.spreadsheets,
+        db.scales, db.categories, db.scaleLogs, db.branches, db.shifts
+    ], async () => {
         // 1. Preserve Admin Users
         const adminUsers = await db.users.where('role').equals('admin').toArray();
 
@@ -517,20 +772,45 @@ export const resetApplicationData = async () => {
         await db.invoices.clear();
         await db.expenses.clear();
         await db.purchases.clear();
+        await db.purchasePayments.clear();
         await db.suppliers.clear();
         await db.activityLogs.clear();
         await db.notifications.clear();
-        await db.cashEntries.clear();
         await db.cashEntries.clear();
         await db.cashParties.clear();
         await db.spreadsheets.clear();
         await db.scales.clear();
         await db.scaleLogs.clear();
         await db.branches.clear();
+        await db.companies.clear();
+        await db.shifts.clear();
         await db.users.clear();
 
         // 3. Restore Admin Users
         await db.users.bulkAdd(adminUsers);
+        await db.companies.add({
+            id: DEFAULT_COMPANY_ID,
+            name: 'Default Company',
+            legalName: 'Default Company',
+            country: 'Saudi Arabia',
+            status: 'active',
+            createdAt: new Date(),
+            updatedAt: new Date()
+        });
+        await db.branches.add({
+            id: DEFAULT_BRANCH_ID,
+            companyId: DEFAULT_COMPANY_ID,
+            name: 'Default Store',
+            location: '',
+            phone: '',
+            isMaster: true,
+            status: 'active',
+            country: 'Saudi Arabia',
+            taxName: 'VAT',
+            taxRate: 15,
+            updatedAt: new Date(),
+            branchId: DEFAULT_BRANCH_ID
+        });
     });
 
     // 4. Clear LocalStorage (Filtering specific keys)

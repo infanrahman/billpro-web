@@ -1,122 +1,199 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { db, type User, createRecordMetadata } from '../services/db';
+import {
+    db,
+    type Branch,
+    type Company,
+    type User,
+    createRecordMetadata,
+    DEFAULT_BRANCH_ID,
+    DEFAULT_COMPANY_ID,
+} from '../services/db';
 import LoadingScreen from '../components/UI/LoadingScreen';
+import * as forge from 'node-forge';
+import { PERMISSIONS, userHasPermission, permissionIdFor, type PermissionSection } from '../auth/permissions';
 
 interface AuthContextType {
     user: User | null;
     token: string | null;
+    activeCompanyId: string;
+    activeCompany: Company | null;
+    availableCompanies: Company[];
     activeBranchId: string;
-    activeBranch: any | null;
-    availableBranches: any[];
+    activeBranch: Branch | null;
+    availableBranches: Branch[];
     login: (username: string, password: string) => Promise<boolean>;
     logout: () => void;
+    switchCompany: (companyId: string) => Promise<void>;
     switchBranch: (branchId: string) => void;
     isAuthenticated: boolean;
     isAdmin: boolean;
     hasPermission: (permission: string) => boolean;
+    can: (permission: string) => boolean;
+    canView: (section: PermissionSection) => boolean;
+    canCreate: (section: PermissionSection) => boolean;
+    canUpdate: (section: PermissionSection) => boolean;
+    canDelete: (section: PermissionSection) => boolean;
     logActivity: (action: string, details?: string) => Promise<void>;
 }
 
-export const PERMISSIONS = [
-    // Core
-    { id: 'pos_access', label: 'POS Terminal Access' },
-    { id: 'reports_view', label: 'View Reports' },
-    { id: 'cashbook_access', label: 'Access Cash Book' },
-    
-    // Inventory
-    { id: 'inventory_view', label: 'View Inventory' },
-    { id: 'inventory_add', label: 'Add Items' },
-    { id: 'inventory_edit', label: 'Edit Items' },
-    { id: 'inventory_delete', label: 'Delete Items' },
-    
-    // Sales
-    { id: 'sales_view', label: 'View Sales History' },
-    { id: 'sales_add', label: 'Create Sales' },
-    { id: 'sales_edit', label: 'Edit Invoices' },
-    { id: 'sales_delete', label: 'Delete Invoices' },
-    
-    // Purchases
-    { id: 'purchases_view', label: 'View Purchases' },
-    { id: 'purchases_add', label: 'Create Purchases' },
-    { id: 'purchases_edit', label: 'Edit Purchases' },
-    { id: 'purchases_delete', label: 'Delete Purchases' },
-    
-    // Customers
-    { id: 'customers_view', label: 'View Customers' },
-    { id: 'customers_add', label: 'Add Customers' },
-    { id: 'customers_edit', label: 'Edit Customers' },
-    { id: 'customers_delete', label: 'Delete Customers' },
-    
-    // Suppliers
-    { id: 'suppliers_view', label: 'View Suppliers' },
-    { id: 'suppliers_add', label: 'Add Suppliers' },
-    { id: 'suppliers_edit', label: 'Edit Suppliers' },
-    { id: 'suppliers_delete', label: 'Delete Suppliers' },
-    
-    // Expenses
-    { id: 'expenses_view', label: 'View Expenses' },
-    { id: 'expenses_add', label: 'Add Expenses' },
-    { id: 'expenses_edit', label: 'Edit Expenses' },
-    { id: 'expenses_delete', label: 'Delete Expenses' },
-    
-    // Settings Tabs
-    { id: 'settings_general', label: 'General / Business Setup' },
-    { id: 'settings_taxes', label: 'Taxes & Localization' },
-    { id: 'settings_invoice', label: 'Invoice Customization' },
-    { id: 'settings_printers', label: 'Hardware/Printers' },
-    { id: 'settings_backup', label: 'Data Backups' },
-    { id: 'users_manage', label: 'User Management' },
-];
+export { PERMISSIONS };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const SECURE_ITERATIONS = 600000;
+const LEGACY_ITERATIONS = 5000;
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+
     const [user, setUser] = useState<User | null>(null);
     const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
     const [loading, setLoading] = useState(true);
-    const [activeBranchId, setActiveBranchId] = useState<string>(localStorage.getItem('currentBranchId') || '00000000-0000-0000-0000-000000000000');
-    const [availableBranches, setAvailableBranches] = useState<any[]>([]);
-    const [activeBranch, setActiveBranch] = useState<any | null>(null);
+    const [activeCompanyId, setActiveCompanyId] = useState<string>(localStorage.getItem('currentCompanyId') || DEFAULT_COMPANY_ID);
+    const [activeCompany, setActiveCompany] = useState<Company | null>(null);
+    const [availableCompanies, setAvailableCompanies] = useState<Company[]>([]);
+    const [activeBranchId, setActiveBranchId] = useState<string>(localStorage.getItem('currentBranchId') || DEFAULT_BRANCH_ID);
+    const [availableBranches, setAvailableBranches] = useState<Branch[]>([]);
+    const [activeBranch, setActiveBranch] = useState<Branch | null>({
+        id: DEFAULT_BRANCH_ID,
+        companyId: DEFAULT_COMPANY_ID,
+        name: 'Default Store',
+        location: '',
+        phone: '',
+        isMaster: true,
+        status: 'active',
+        updatedAt: new Date(),
+        branchId: DEFAULT_BRANCH_ID
+    });
 
     useEffect(() => {
-        const fetchBranches = async () => {
-            const branches = await db.branches.toArray();
-            setAvailableBranches(branches);
-            const current = branches.find(b => b.id === activeBranchId);
-            if (current) setActiveBranch(current);
+        const ensureDefaultOrganization = async () => {
+            const now = new Date();
+            const defaultCompany = await db.companies.get(DEFAULT_COMPANY_ID);
+            if (!defaultCompany) {
+                await db.companies.add({
+                    id: DEFAULT_COMPANY_ID,
+                    name: 'Default Company',
+                    legalName: 'Default Company',
+                    country: 'Saudi Arabia',
+                    status: 'active',
+                    createdAt: now,
+                    updatedAt: now,
+                });
+            }
+
+            const masterBranch = await db.branches.get(DEFAULT_BRANCH_ID);
+            if (!masterBranch) {
+                await db.branches.add({
+                    id: DEFAULT_BRANCH_ID,
+                    companyId: DEFAULT_COMPANY_ID,
+                    name: 'Default Store',
+                    location: '',
+                    phone: '',
+                    isMaster: true,
+                    status: 'active',
+                    country: 'Saudi Arabia',
+                    taxName: 'VAT',
+                    taxRate: 15,
+                    updatedAt: now,
+                    branchId: DEFAULT_BRANCH_ID
+                });
+            } else if (!masterBranch.companyId) {
+                await db.branches.update(masterBranch.id, { companyId: DEFAULT_COMPANY_ID });
+            }
         };
-        if (!loading) fetchBranches();
-    }, [activeBranchId, loading]);
+
+        const loadOrganizationScope = async () => {
+            await ensureDefaultOrganization();
+
+            const allCompanies = await db.companies
+                .filter(company => company.status === 'active' && !company.deletedAt)
+                .toArray();
+
+            const allowedCompanyIds = user?.role === 'admin'
+                ? allCompanies.map(company => company.id)
+                : (user?.companyIds?.length ? user.companyIds : [user?.defaultCompanyId || DEFAULT_COMPANY_ID]);
+
+            const scopedCompanies = allCompanies.filter(company => allowedCompanyIds.includes(company.id));
+            const preferredCompanyId = scopedCompanies.some(company => company.id === activeCompanyId)
+                ? activeCompanyId
+                : scopedCompanies[0]?.id || DEFAULT_COMPANY_ID;
+
+            const company = scopedCompanies.find(item => item.id === preferredCompanyId)
+                || await db.companies.get(preferredCompanyId)
+                || null;
+
+            setAvailableCompanies(scopedCompanies);
+            setActiveCompany(company);
+            setActiveCompanyId(preferredCompanyId);
+            localStorage.setItem('currentCompanyId', preferredCompanyId);
+
+            const allBranches = await db.branches
+                .where('companyId')
+                .equals(preferredCompanyId)
+                .filter(branch => branch.status === 'active' && !branch.deletedAt)
+                .toArray();
+
+            const allowedBranchIds = user?.role === 'admin'
+                ? allBranches.map(branch => branch.id)
+                : (user?.branchIds?.length ? user.branchIds : [user?.defaultBranchId || DEFAULT_BRANCH_ID]);
+
+            const scopedBranches = allBranches.filter(branch => allowedBranchIds.includes(branch.id));
+            setAvailableBranches(scopedBranches);
+
+            const preferredBranchId = scopedBranches.some(branch => branch.id === activeBranchId)
+                ? activeBranchId
+                : scopedBranches[0]?.id || DEFAULT_BRANCH_ID;
+
+            const branch = scopedBranches.find(item => item.id === preferredBranchId)
+                || await db.branches.get(preferredBranchId)
+                || null;
+
+            if (branch) {
+                setActiveBranch(branch);
+                setActiveBranchId(branch.id);
+                localStorage.setItem('currentBranchId', branch.id);
+            }
+        };
+
+        if (!loading) loadOrganizationScope();
+    }, [loading, user, activeCompanyId, activeBranchId]);
 
     useEffect(() => {
         const initAuth = async () => {
-            // Create a minimum delay promise of 4 seconds (4000ms)
-            const minDelay = new Promise(resolve => setTimeout(resolve, 4000));
-
-            try {   // Run auth logic and delay concurrently
-                const [_, adminCount] = await Promise.all([
-                    minDelay,
-                    db.users.where('role').equals('admin').count()
-                ]);
+            try {
+                // Ensure default admin exists
+                const adminCount = await db.users.where('role').equals('admin').count();
 
                 if (adminCount === 0) {
+                    const salt = forge.util.encode64(forge.random.getBytesSync(16));
+                    const derivedKey = forge.pkcs5.pbkdf2('admin123', salt, SECURE_ITERATIONS, 32, forge.md.sha256.create());
+                    const hashedPassword = forge.util.encode64(derivedKey);
+
                     await db.users.add({
                         ...createRecordMetadata(),
                         username: 'admin',
-                        password: 'admin123', // Simple default
+                        password: hashedPassword,
+                        salt: salt,
+                        isHashed: true,
+                        iterations: SECURE_ITERATIONS,
+                        forcePasswordChange: true,
                         role: 'admin',
                         name: 'System Admin',
-                        permissions: [] // Admin has all implicit permissions
+                        permissions: [],
+                        companyIds: [DEFAULT_COMPANY_ID],
+                        branchIds: [DEFAULT_BRANCH_ID],
+                        defaultCompanyId: DEFAULT_COMPANY_ID,
+                        defaultBranchId: DEFAULT_BRANCH_ID
                     });
-                    console.log("Seeded default admin user");
+                    console.log("Seeded default admin user with hardened security");
                 }
 
-                // Validate existing token
-                if (token) {
+                // Validate existing token (Now using HMAC Signature)
+                if (token && window.electron) {
                     try {
-                        const decoded = atob(token);
-                        const [idStr] = decoded.split(':');
-                        if (idStr) {
+                        const payload = await window.electron.verifyToken(token);
+                        if (payload) {
+                            const [idStr] = payload.split(':');
                             const foundUser = await db.users.get(idStr);
                             if (foundUser) {
                                 setUser(foundUser);
@@ -124,12 +201,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                                 logout();
                             }
                         } else {
+                            console.warn("Insecure or tampered token detected. Logging out.");
                             logout();
                         }
                     } catch (e) {
                         console.error("Token validation failed:", e);
                         logout();
                     }
+                } else if (token) {
+                    // In browser mode without electron, just decode (Dev fallback)
+                    try {
+                        const decoded = atob(token.split('.')[0]); // Take payload part
+                        const [idStr] = decoded.split(':');
+                        const foundUser = await db.users.get(idStr);
+                        if (foundUser) setUser(foundUser);
+                        else logout();
+                    } catch { logout(); }
                 }
             } catch (error) {
                 console.error("Auth initialization failed:", error);
@@ -139,20 +226,68 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
 
         initAuth();
-        // Remove the separate timeout as it's now handled internally
         return () => { };
     }, []);
 
     const login = async (username: string, password: string): Promise<boolean> => {
         try {
             const foundUser = await db.users.where('username').equalsIgnoreCase(username).first();
-            if (foundUser && foundUser.password === password) {
-                setUser(foundUser);
-                const newToken = btoa(`${foundUser.id}:${foundUser.role}:${Date.now()}`);
+            if (!foundUser) return false;
+
+            let isValid = false;
+            const currentIterations = foundUser.iterations || (foundUser.isHashed ? LEGACY_ITERATIONS : 0);
+
+            if (foundUser.isHashed && foundUser.salt) {
+                const derivedKey = forge.pkcs5.pbkdf2(password, foundUser.salt, currentIterations, 32, forge.md.sha256.create());
+                const hashAttempt = forge.util.encode64(derivedKey);
+                isValid = (foundUser.password === hashAttempt);
+            } else if (foundUser.password === password) {
+                // Raw password (unlikely but handled)
+                isValid = true;
+            }
+
+            if (isValid) {
+                // Check if we need to upgrade hashing iterations
+                if (currentIterations < SECURE_ITERATIONS) {
+                    const newSalt = forge.util.encode64(forge.random.getBytesSync(16));
+                    const newDerivedKey = forge.pkcs5.pbkdf2(password, newSalt, SECURE_ITERATIONS, 32, forge.md.sha256.create());
+                    const newHashedPassword = forge.util.encode64(newDerivedKey);
+                    
+                    await db.users.update(foundUser.id!, {
+                        password: newHashedPassword,
+                        salt: newSalt,
+                        isHashed: true,
+                        iterations: SECURE_ITERATIONS
+                    });
+                    console.log(`User ${username} migrated to ${SECURE_ITERATIONS} iterations`);
+                }
+
+                const scopedUser = {
+                    ...foundUser,
+                    companyIds: foundUser.companyIds?.length ? foundUser.companyIds : [foundUser.defaultCompanyId || DEFAULT_COMPANY_ID],
+                    branchIds: foundUser.branchIds?.length ? foundUser.branchIds : [foundUser.defaultBranchId || DEFAULT_BRANCH_ID],
+                    defaultCompanyId: foundUser.defaultCompanyId || DEFAULT_COMPANY_ID,
+                    defaultBranchId: foundUser.defaultBranchId || DEFAULT_BRANCH_ID,
+                };
+
+                setUser(scopedUser);
+                localStorage.setItem('currentCompanyId', scopedUser.defaultCompanyId);
+                localStorage.setItem('currentBranchId', scopedUser.defaultBranchId);
+                setActiveCompanyId(scopedUser.defaultCompanyId);
+                setActiveBranchId(scopedUser.defaultBranchId);
+                
+                // Create Signed Session Token: [UserID]:[Role]:[Timestamp]:[Entropy]
+                const payload = `${foundUser.id}:${foundUser.role}:${Date.now()}:${crypto.randomUUID()}`;
+                let newToken = '';
+                if (window.electron) {
+                    newToken = await window.electron.signToken(payload);
+                } else {
+                    newToken = btoa(payload) + '.dev-unsigned-token';
+                }
+                
                 setToken(newToken);
                 localStorage.setItem('token', newToken);
 
-                // Log Login
                 await db.activityLogs.add({
                     ...createRecordMetadata(),
                     userId: foundUser.id!,
@@ -177,20 +312,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         window.location.reload();
     };
 
-    const switchBranch = async (branchId: string) => {
+    const switchCompany = async (companyId: string) => {
+        const company = availableCompanies.find(item => item.id === companyId) || await db.companies.get(companyId);
+        if (!company) return;
 
-        
-        setActiveBranchId(branchId);
-        localStorage.setItem('currentBranchId', branchId);
-        // Refresh to ensure all hooks reload with new filter
-        window.location.reload(); 
+        const branches = await db.branches
+            .where('companyId')
+            .equals(company.id)
+            .filter(branch => branch.status === 'active' && !branch.deletedAt)
+            .toArray();
+
+        const scopedBranches = user?.role === 'admin'
+            ? branches
+            : branches.filter(branch => (user?.branchIds || [DEFAULT_BRANCH_ID]).includes(branch.id));
+
+        const nextBranch = scopedBranches[0];
+        setActiveCompany(company);
+        setActiveCompanyId(company.id);
+        setAvailableBranches(scopedBranches);
+        localStorage.setItem('currentCompanyId', company.id);
+
+        if (nextBranch) {
+            setActiveBranch(nextBranch);
+            setActiveBranchId(nextBranch.id);
+            localStorage.setItem('currentBranchId', nextBranch.id);
+        }
+    };
+
+    const switchBranch = async (branchId: string) => {
+        const branch = availableBranches.find(item => item.id === branchId) || await db.branches.get(branchId);
+        if (!branch) return;
+        setActiveBranch(branch);
+        setActiveBranchId(branch.id);
+        localStorage.setItem('currentBranchId', branch.id);
+        if (branch.companyId && branch.companyId !== activeCompanyId) {
+            setActiveCompanyId(branch.companyId);
+            localStorage.setItem('currentCompanyId', branch.companyId);
+        }
     };
 
     const hasPermission = (permission: string): boolean => {
         if (!user) return false;
         if (user.role === 'admin') return true; // Admin has all permissions
-        return user.permissions?.includes(permission) || false;
+        return userHasPermission(user.permissions, permission);
     };
+
+    const can = hasPermission;
+    const canView = (section: PermissionSection) => hasPermission(permissionIdFor(section, 'view'));
+    const canCreate = (section: PermissionSection) => hasPermission(permissionIdFor(section, 'create'));
+    const canUpdate = (section: PermissionSection) => hasPermission(permissionIdFor(section, 'update'));
+    const canDelete = (section: PermissionSection) => hasPermission(permissionIdFor(section, 'delete'));
 
     const logActivity = async (action: string, details?: string) => {
         if (!user) return;
@@ -216,15 +387,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         <AuthContext.Provider value={{
             user,
             token,
+            activeCompanyId,
+            activeCompany,
+            availableCompanies,
             activeBranchId,
             activeBranch,
             availableBranches,
             login,
             logout,
+            switchCompany,
             switchBranch,
             isAuthenticated: !!user,
             isAdmin: user?.role === 'admin',
             hasPermission,
+            can,
+            canView,
+            canCreate,
+            canUpdate,
+            canDelete,
             logActivity
         }}>
             {children}

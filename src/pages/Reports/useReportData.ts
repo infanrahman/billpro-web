@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { db } from '../../services/db';
+import { db, matchesActiveScope } from '../../services/db';
 import { useAuth } from '../../contexts/AuthContext';
 import { startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear, eachDayOfInterval, format } from 'date-fns';
 
@@ -17,7 +17,7 @@ export interface ReportData {
 }
 
 export const useReportData = (range: DateRange, customStartStr?: string, customEndStr?: string) => {
-    const { activeBranchId, activeBranch } = useAuth();
+    const { activeCompanyId, activeBranchId, activeBranch } = useAuth();
     const [data, setData] = useState<ReportData>({
         totalSales: 0,
         totalExpenses: 0,
@@ -86,19 +86,18 @@ export const useReportData = (range: DateRange, customStartStr?: string, customE
                 const invoices = await db.invoices
                     .where('createdAt')
                     .between(start, end, true, true)
-                    .and((inv: any) => (activeBranch?.isMaster || inv.branchId === activeBranchId) && !inv.deletedAt)
+                    .and((inv: any) => matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !inv.deletedAt)
                     .toArray();
 
                 // Fetch Expenses
                 const expenses = await db.expenses
                     .where('date')
                     .between(start, end, true, true)
-                    .and((exp: any) => (activeBranch?.isMaster || exp.branchId === activeBranchId) && !exp.deletedAt)
+                    .and((exp: any) => matchesActiveScope(exp, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !exp.deletedAt)
                     .toArray();
 
                 // Fetch ALL Items to get current purchase price (COGS Proxy)
-                const allItemsQuery = activeBranch?.isMaster ? db.items : db.items.where('branchId').equals(activeBranchId);
-                const allItems = await (allItemsQuery as any).filter((i: any) => !i.deletedAt).toArray();
+                const allItems = await db.items.filter((i: any) => matchesActiveScope(i, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !i.deletedAt).toArray();
                 const itemCostMap = new Map<string, number>();
                 allItems.forEach((item: any) => {
                     if (item.id) itemCostMap.set(item.id, item.purchasePrice || 0);
@@ -196,7 +195,7 @@ export const useReportData = (range: DateRange, customStartStr?: string, customE
         };
 
         fetchData();
-    }, [range, customStartStr, customEndStr, activeBranchId, activeBranch?.isMaster]);
+    }, [range, customStartStr, customEndStr, activeCompanyId, activeBranchId, activeBranch?.isMaster]);
 
     return data;
 };

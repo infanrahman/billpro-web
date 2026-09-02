@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { db } from '../../services/db';
+import { db, matchesActiveScope } from '../../services/db';
 import { useAuth } from '../../contexts/AuthContext';
 import { startOfDay, endOfDay } from 'date-fns';
 
@@ -24,7 +24,7 @@ export interface DayBookSummary {
 }
 
 export const useDayBookData = (range: 'today' | 'custom', customStartStr?: string, customEndStr?: string) => {
-    const { activeBranchId, activeBranch } = useAuth();
+    const { activeCompanyId, activeBranchId, activeBranch } = useAuth();
     const [transactions, setTransactions] = useState<DayBookItem[]>([]);
     const [summary, setSummary] = useState<DayBookSummary>({ totalIn: 0, totalOut: 0, balance: 0, dailyProfit: 0, cashInHand: 0 });
     const [loading, setLoading] = useState(true);
@@ -61,8 +61,9 @@ export const useDayBookData = (range: 'today' | 'custom', customStartStr?: strin
                 }
 
                 // Fetch Items for Cost Calculation
-                const allItemsQuery = activeBranch?.isMaster ? db.items : db.items.where('branchId').equals(activeBranchId);
-                const allItems = await (allItemsQuery as any).filter((i: any) => !i.deletedAt).toArray();
+                const allItems = await db.items
+                    .filter((i: any) => matchesActiveScope(i, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !i.deletedAt)
+                    .toArray();
                 const itemCostMap = new Map<string, number>();
                 allItems.forEach((item: any) => {
                     if (item.id) itemCostMap.set(item.id, item.purchasePrice || 0);
@@ -76,7 +77,7 @@ export const useDayBookData = (range: 'today' | 'custom', customStartStr?: strin
                 const invoices = await db.invoices
                     .where('createdAt')
                     .between(start, end, true, true)
-                    .and((inv: any) => (activeBranch?.isMaster || inv.branchId === activeBranchId) && !inv.deletedAt)
+                    .and((inv: any) => matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !inv.deletedAt)
                     .toArray();
 
                 invoices.forEach((inv: any) => {
@@ -96,7 +97,8 @@ export const useDayBookData = (range: 'today' | 'custom', customStartStr?: strin
                     });
 
                     // Sales Revenue = GrandTotal - TaxAmount (Net Sales)
-                    const saleRevenue = (inv.grandTotal - (inv.taxAmount || 0));
+                    // Priority: 1. Stored netAmount 2. Calculated fallback
+                    const saleRevenue = inv.netAmount !== undefined ? inv.netAmount : (inv.grandTotal - (inv.taxAmount || 0));
 
                     const invoiceProfit = (saleRevenue - invoiceCOGS) * multiplier;
                     dailyGrossProfit += invoiceProfit;
@@ -135,11 +137,11 @@ export const useDayBookData = (range: 'today' | 'custom', customStartStr?: strin
                 const custPayments = await db.customerPayments
                     .where('date')
                     .between(start, end, true, true)
-                    .and((p: any) => (activeBranch?.isMaster || p.branchId === activeBranchId) && !p.deletedAt)
+                    .and((p: any) => matchesActiveScope(p, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !p.deletedAt)
                     .toArray();
 
                 const customerIds = [...new Set(custPayments.map((p: any) => p.customerId))].filter(Boolean) as string[];
-                const customers = await db.customers.where('id').anyOf(customerIds).and((c: any) => (activeBranch?.isMaster || c.branchId === activeBranchId) && !c.deletedAt).toArray();
+                const customers = await db.customers.where('id').anyOf(customerIds).and((c: any) => matchesActiveScope(c, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !c.deletedAt).toArray();
                 const custMap = new Map<string, string>(customers.map((c: any) => [c.id as string, c.name]));
 
                 custPayments.forEach((pay: any) => {
@@ -159,7 +161,7 @@ export const useDayBookData = (range: 'today' | 'custom', customStartStr?: strin
                 const expenses = await db.expenses
                     .where('date')
                     .between(start, end, true, true)
-                    .and((exp: any) => (activeBranch?.isMaster || exp.branchId === activeBranchId) && !exp.deletedAt)
+                    .and((exp: any) => matchesActiveScope(exp, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !exp.deletedAt)
                     .toArray();
 
                 expenses.forEach((exp: any) => {
@@ -181,7 +183,7 @@ export const useDayBookData = (range: 'today' | 'custom', customStartStr?: strin
                 const purchases = await db.purchases
                     .where('date')
                     .between(start, end, true, true)
-                    .and((pur: any) => (activeBranch?.isMaster || pur.branchId === activeBranchId) && !pur.deletedAt)
+                    .and((pur: any) => matchesActiveScope(pur, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !pur.deletedAt)
                     .toArray();
 
                 purchases.forEach((pur: any) => {
@@ -205,11 +207,11 @@ export const useDayBookData = (range: 'today' | 'custom', customStartStr?: strin
                     const purPayments = await db.purchasePayments
                         .where('date')
                         .between(start, end, true, true)
-                        .and((p: any) => (activeBranch?.isMaster || p.branchId === activeBranchId) && !p.deletedAt)
+                        .and((p: any) => matchesActiveScope(p, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !p.deletedAt)
                         .toArray();
 
                     const supplierIds = [...new Set(purPayments.map((p: any) => p.supplierId))].filter(Boolean) as string[];
-                    const suppliers = await db.suppliers.where('id').anyOf(supplierIds).and((s: any) => (activeBranch?.isMaster || s.branchId === activeBranchId) && !s.deletedAt).toArray();
+                    const suppliers = await db.suppliers.where('id').anyOf(supplierIds).and((s: any) => matchesActiveScope(s, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !s.deletedAt).toArray();
                     const supMap = new Map<string, string>(suppliers.map((s: any) => [s.id as string, s.name]));
 
                     purPayments.forEach((pay: any) => {
@@ -231,13 +233,12 @@ export const useDayBookData = (range: 'today' | 'custom', customStartStr?: strin
                     const cashEntries = await db.cashEntries
                         .where('date')
                         .between(start, end, true, true)
-                        .and((e: any) => (activeBranch?.isMaster || e.branchId === activeBranchId) && !e.deletedAt)
+                        .and((e: any) => matchesActiveScope(e, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !e.deletedAt)
                         .toArray();
 
                     cashEntries.forEach((entry: any) => {
-                        if (entry.type === 'out') {
-                            dailyExpenses += entry.amount;
-                        }
+                        // Do not add Cash Book out to dailyExpenses, as they could be bank deposits or personal drawings.
+                        // Actual expenses are already counted from db.expenses.
 
                         dayBookItems.push({
                             id: `cash-${entry.id}`,
@@ -277,7 +278,7 @@ export const useDayBookData = (range: 'today' | 'custom', customStartStr?: strin
         };
 
         fetchData();
-    }, [range, customStartStr, customEndStr, activeBranchId, activeBranch?.isMaster]);
+    }, [range, customStartStr, customEndStr, activeCompanyId, activeBranchId, activeBranch?.isMaster]);
 
     return { transactions, summary, loading };
 };

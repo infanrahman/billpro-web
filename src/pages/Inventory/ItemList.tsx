@@ -1,38 +1,42 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { db, createRecordMetadata, softDeleteMetadata } from '../../services/db';
+import { motion, AnimatePresence } from 'framer-motion';
+import { db, createRecordMetadata, matchesActiveScope, softDeleteMetadata } from '../../services/db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useTranslation } from 'react-i18next';
-import { Search, Plus, Edit, Trash, ShieldOff, Upload } from 'lucide-react';
+import { 
+    Search, Plus, Edit, Trash, ShieldOff, Upload, 
+    QrCode, LayoutGrid, Tags, Wand2, PackageOpen, 
+    List, Filter, ChevronDown, Sparkles, TrendingUp, 
+    AlertTriangle, Banknote, MapPin, Box, ArrowUpRight
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { read, utils } from 'xlsx';
 import { useSettings } from '../../contexts/SettingsContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { QrCode, LayoutGrid, Tags, Wand2 } from 'lucide-react';
 import BarcodeModal from './BarcodeModal';
 import CategoryTab from './CategoryTab';
 import type { Item } from '../../services/db';
-
 import { useNotification } from '../../contexts/NotificationContext';
 import ConfirmationModal from '../../components/UI/ConfirmationModal';
-import { useGridNavigation } from '../../hooks/useGridNavigation';
 import Skeleton from '../../components/UI/Skeleton';
 import EmptyState from '../../components/UI/EmptyState';
-import { PackageOpen } from 'lucide-react';
 import Pagination from '../../components/UI/Pagination';
+import clsx from 'clsx';
 
 const ItemList: React.FC = () => {
     const { t } = useTranslation();
     const { settings, formatCurrency } = useSettings();
-    const { hasPermission, isAdmin, activeBranchId, activeBranch } = useAuth();
+    const { canView, canCreate, canUpdate, canDelete, activeCompanyId, activeBranchId, activeBranch } = useAuth();
     const { addToast } = useNotification();
     const navigate = useNavigate();
 
     const [activeTab, setActiveTab] = useState<'items' | 'categories'>('items');
+    const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
 
     // Pagination & Filter State
     const [search, setSearch] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
-    const [pageSize, setPageSize] = useState(10);
+    const [pageSize, setPageSize] = useState(settings.cafeMode ? 12 : 10);
 
     const [selectedItemForLabel, setSelectedItemForLabel] = useState<Item[] | null>(null);
     const [isLabelModalOpen, setIsLabelModalOpen] = useState(false);
@@ -47,9 +51,9 @@ const ItemList: React.FC = () => {
     const [isImporting, setIsImporting] = useState(false);
 
     // Page Level Guard
-    if (!hasPermission('inventory_view')) {
+    if (!canView('inventory')) {
         return (
-            <div className="flex flex-col items-center justify-center h-96 text-center p-8">
+            <div className="flex flex-col items-center justify-center h-screen text-center p-8">
                 <ShieldOff size={48} className="text-slate-300 mb-4" />
                 <h2 className="text-xl font-bold text-slate-700 dark:text-slate-300">{t('common.access_denied')}</h2>
                 <p className="text-slate-500">{t('inventory.access_denied_view')}</p>
@@ -65,29 +69,27 @@ const ItemList: React.FC = () => {
     // Query for total count (for pagination)
     const totalItems = useLiveQuery(
         () => {
-            const query = (activeBranch?.isMaster ? db.items : db.items.where('branchId').equals(activeBranchId)) as any;
             if (search) {
-                return query
-                    .filter((item: any) => !item.deletedAt && (
+                return db.items
+                    .filter((item) => matchesActiveScope(item, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !item.deletedAt && (
                         item.name.toLowerCase().includes(search.toLowerCase()) ||
                         item.barcode.includes(search) ||
                         (!!item.itemCode && item.itemCode.includes(search))
                     ))
                     .count();
             }
-            return query.filter((item: any) => !item.deletedAt).count();
+            return db.items.filter((item) => matchesActiveScope(item, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !item.deletedAt).count();
         },
-        [search, activeBranchId, activeBranch?.isMaster]
+        [search, activeCompanyId, activeBranchId, activeBranch?.isMaster]
     ) || 0;
 
     // Paginated Data Query
     const items = useLiveQuery(
         () => {
             const offset = (currentPage - 1) * pageSize;
-            const query = (activeBranch?.isMaster ? db.items : db.items.where('branchId').equals(activeBranchId)) as any;
             if (search) {
-                return query
-                    .filter((item: any) => !item.deletedAt && (
+                return db.items
+                    .filter((item) => matchesActiveScope(item, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !item.deletedAt && (
                         item.name.toLowerCase().includes(search.toLowerCase()) ||
                         item.barcode.includes(search) ||
                         (!!item.itemCode && item.itemCode.includes(search))
@@ -96,44 +98,67 @@ const ItemList: React.FC = () => {
                     .limit(pageSize)
                     .toArray();
             }
-            return query
-                .filter((item: any) => !item.deletedAt)
+            return db.items
+                .filter((item) => matchesActiveScope(item, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !item.deletedAt)
                 .offset(offset)
                 .limit(pageSize)
                 .toArray();
         },
-        [search, currentPage, pageSize, activeBranchId, activeBranch?.isMaster]
+        [search, currentPage, pageSize, activeCompanyId, activeBranchId, activeBranch?.isMaster]
     );
+
+    const loading = items === undefined;
+
+    // Stats Query
+    const inventoryStats = useLiveQuery(async () => {
+        const allItems = await db.items.filter((i) => matchesActiveScope(i, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !i.deletedAt).toArray();
+        
+        const total = allItems.length;
+        const lowStock = allItems.filter((i: any) => (i.stock || 0) <= (i.minStock || 0)).length;
+        const totalValue = allItems.reduce((sum: number, i: any) => sum + ((i.stock || 0) * (i.purchasePrice || 0)), 0);
+        
+        return { total, lowStock, totalValue };
+    }, [activeCompanyId, activeBranchId, activeBranch?.isMaster]);
 
     const totalPages = Math.ceil(totalItems / pageSize);
 
-    // Grid Nav
-    const { getGridCellProps } = useGridNavigation({
-        rows: items?.length || 0,
-        cols: 8
-    });
-
-    const suppliers = useLiveQuery(() => activeBranch?.isMaster ? db.suppliers.toArray() : db.suppliers.where('branchId').equals(activeBranchId).toArray(), [activeBranchId, activeBranch?.isMaster]);
-
     const handleDeleteClick = (id: string) => {
+        if (!canDelete('inventory')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
         setItemToDelete(id);
     };
 
     const handleConfirmDelete = async () => {
+        if (!canDelete('inventory')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         if (itemToDelete) {
             await db.items.update(itemToDelete, softDeleteMetadata());
             setItemToDelete(null);
-            // Refresh selection if needed, though useLiveQuery handles data
             setSelectedIds(prev => prev.filter((id: any) => id !== itemToDelete));
+            addToast(t('inventory.delete_success') || 'Item deleted', 'success');
         }
     };
 
     const handleBulkDeleteClick = () => {
+        if (!canDelete('inventory')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
         if (selectedIds.length === 0) return;
         setIsBulkDeleteModalOpen(true);
     };
 
     const handleConfirmBulkDelete = async () => {
+        if (!canDelete('inventory')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         try {
             await db.transaction('rw', db.items, async () => {
                 for (const id of selectedIds) {
@@ -163,30 +188,32 @@ const ItemList: React.FC = () => {
         const allSelected = items.every((item: any) => selectedIds.includes(item.id!));
 
         if (allSelected) {
-            // Deselect all visible
             const visibleIds = items.map((i: any) => i.id!);
             setSelectedIds(prev => prev.filter((id: any) => !visibleIds.includes(id)));
         } else {
-            // Select all visible
             const newIds = items.map((item: any) => item.id!).filter((id: any) => !selectedIds.includes(id));
             setSelectedIds(prev => [...prev, ...newIds]);
         }
     };
 
     const handleAutoFillBarcodes = async () => {
+        if (!canUpdate('inventory')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         try {
-            const allItems = await db.items.toArray();
+            const allItems = await db.items
+                .filter((item) => matchesActiveScope(item, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !item.deletedAt)
+                .toArray();
             const itemsWithoutBarcode = allItems.filter((item: any) => !item.barcode || item.barcode.trim() === '');
 
             if (itemsWithoutBarcode.length === 0) {
-                addToast(t('inventory.all_items_have_barcodes', { defaultValue: 'All items already have barcodes.' }), 'info');
+                addToast(t('inventory.all_items_have_barcodes'), 'info');
                 return;
             }
 
-            const confirm = window.confirm(t('inventory.confirm_auto_barcode', {
-                defaultValue: `Auto-generate barcodes for ${itemsWithoutBarcode.length} items without barcodes?`,
-                count: itemsWithoutBarcode.length
-            }));
+            const confirm = window.confirm(t('inventory.confirm_auto_barcode', { count: itemsWithoutBarcode.length }));
             if (!confirm) return;
 
             const updatedItems = itemsWithoutBarcode.map((item: any) => {
@@ -195,22 +222,21 @@ const ItemList: React.FC = () => {
             });
 
             await db.items.bulkPut(updatedItems);
-            addToast(t('inventory.barcodes_generated', {
-                defaultValue: `Generated barcodes for ${updatedItems.length} items.`,
-                count: updatedItems.length
-            }), 'success');
-
-            // Just force a reload or wait for live query
+            addToast(t('inventory.barcodes_generated', { count: updatedItems.length }), 'success');
         } catch (error) {
             console.error('Failed to auto-generate barcodes:', error);
-            addToast(t('inventory.barcode_gen_error', { defaultValue: 'Error generating barcodes.' }), 'error');
+            addToast(t('inventory.barcode_gen_error'), 'error');
         }
     };
-
 
     const handleImportExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
+        if (!canCreate('inventory')) {
+            addToast(t('common.access_denied'), 'error');
+            e.target.value = '';
+            return;
+        }
 
         setIsImporting(true);
         try {
@@ -221,11 +247,10 @@ const ItemList: React.FC = () => {
             const jsonData = utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
 
             if (jsonData.length < 2) {
-                addToast(t('inventory.import_empty', { defaultValue: 'File is empty or missing data.' }), 'error');
+                addToast(t('inventory.import_empty'), 'error');
                 return;
             }
 
-            // Simple column mapping heuristics
             const headers = jsonData[0].map((h: any) => String(h || '').toLowerCase().trim());
             const nameIdx = headers.findIndex(h => h === 'name' || h === 'item name' || h === 'item');
             const arabicNameIdx = headers.findIndex(h => h.includes('arabic') || h === 'الاسم العربي');
@@ -236,13 +261,14 @@ const ItemList: React.FC = () => {
             const catIdx = headers.findIndex(h => h.includes('category') || h.includes('dept'));
             const itemCodeIdx = headers.findIndex(h => h.includes('item code') || h.includes('itemcode') || h.includes('scale plu'));
 
-
             if (nameIdx === -1 || salePriceIdx === -1) {
-                addToast(t('inventory.import_missing_cols', { defaultValue: 'Missing required columns: Name and Price' }), 'error');
+                addToast(t('inventory.import_missing_cols'), 'error');
                 return;
             }
 
-            const categories = await db.categories.toArray();
+            const categories = await db.categories
+                .filter((category) => matchesActiveScope(category, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !category.deletedAt)
+                .toArray();
             const categoryMap = new Map(categories.map((c: any) => [c.name.toLowerCase(), c.id!]));
 
             const itemsToAdd: Item[] = [];
@@ -280,19 +306,19 @@ const ItemList: React.FC = () => {
                     categoryId,
                     unit: 'pcs',
                     taxType: 'inclusive',
-                    taxRate: 15, // Default tax rate
-                    minStock: 5, // Default min stock
+                    taxRate: 15,
+                    minStock: 5,
                 });
             }
 
             if (itemsToAdd.length > 0) {
                 await db.items.bulkPut(itemsToAdd);
-                addToast(t('inventory.import_success', { defaultValue: `Successfully imported ${itemsToAdd.length} items.` }), 'success');
+                addToast(t('inventory.import_success', { count: itemsToAdd.length }), 'success');
             }
 
         } catch (err) {
             console.error(err);
-            addToast(t('inventory.import_error', { defaultValue: 'Failed to import file.' }), 'error');
+            addToast(t('inventory.import_error'), 'error');
         } finally {
             setIsImporting(false);
             if (fileInputRef.current) fileInputRef.current.value = '';
@@ -300,236 +326,397 @@ const ItemList: React.FC = () => {
     };
 
     return (
-        <div className="space-y-6">
-            <div className="flex justify-between items-center">
-                <div className="flex items-center gap-4">
-                    <h1 className="text-2xl font-bold dark:text-white">{t('inventory.title')}</h1>
-                    {selectedIds.length > 0 && (
-                        <div className="flex gap-2">
-                            <button
-                                onClick={() => {
-                                    const selectedItems = items?.filter((i: any) => selectedIds.includes(i.id!)) || [];
-                                    setSelectedItemForLabel(selectedItems);
-                                    setIsLabelModalOpen(true);
-                                }}
-                                className="flex items-center gap-2 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-300 px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors animate-in fade-in"
-                            >
-                                <QrCode size={16} /> {t('inventory.print_label')} ({selectedIds.length})
-                            </button>
-                            <button
-                                onClick={handleBulkDeleteClick}
-                                className="flex items-center gap-2 bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-300 px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors animate-in fade-in"
-                            >
-                                <Trash size={16} /> {t('common.delete')} ({selectedIds.length})
-                            </button>
+        <div className="p-8 space-y-8 pb-20 max-w-[1600px] mx-auto">
+            {/* Header Section */}
+            <div className="bg-white/40 dark:bg-slate-800/20 backdrop-blur-2xl p-8 rounded-[3rem] shadow-2xl border border-white/50 dark:border-slate-700/30 relative overflow-hidden group">
+                <div className="absolute top-0 right-0 w-96 h-96 bg-blue-500/5 blur-[100px] -mr-48 -mt-48 pointer-events-none" />
+                
+                <div className="flex flex-col xl:flex-row justify-between xl:items-center gap-8 relative z-10">
+                    <div>
+                        <div className="flex items-center gap-3 mb-2">
+                            <PackageOpen size={32} className="text-blue-600 dark:text-blue-400" />
+                            <h1 className="text-4xl font-black dark:text-white tracking-tighter uppercase">
+                                {t('inventory.title')}
+                            </h1>
                         </div>
-                    )}
-                </div>
-                {hasPermission('inventory_add') && (
-                    <div className="flex gap-2">
-                        <button
-                            onClick={handleAutoFillBarcodes}
-                            className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-300 px-3 py-2 rounded-lg transition-colors border border-slate-200 dark:border-slate-700"
-                            title={t('inventory.auto_fill_barcodes', { defaultValue: 'Auto-fill missing barcodes' })}
-                        >
-                            <Wand2 size={20} className="text-purple-500" />
-                        </button>
-                        <input
-                            type="file"
-                            accept=".xlsx, .xls, .csv"
-                            ref={fileInputRef}
-                            style={{ display: 'none' }}
-                            onChange={handleImportExcel}
-                        />
-                        <button
-                            onClick={() => fileInputRef.current?.click()}
-                            disabled={isImporting}
-                            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg transition-colors shadow-sm"
-                        >
-                            <Upload size={20} />
-                            {isImporting ? t('common.loading', { defaultValue: 'Importing...' }) : t('inventory.import_excel', { defaultValue: 'Import Excel' })}
-                        </button>
-                        <button
-                            onClick={() => navigate('/inventory/add')}
-                            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
-                        >
-                            <Plus size={20} />
-                            {t('common.add')}
-                        </button>
+                        <p className="text-slate-500 dark:text-slate-400 font-bold text-[10px] uppercase tracking-[0.3em]">
+                            {t('inventory.manage_stock') || 'Maintain your product catalog and inventory levels'}
+                        </p>
                     </div>
-                )}
+
+                    <div className="flex flex-wrap items-center gap-4">
+                        <AnimatePresence>
+                            {selectedIds.length > 0 && (
+                                <motion.div 
+                                    initial={{ opacity: 0, scale: 0.9, x: 20 }}
+                                    animate={{ opacity: 1, scale: 1, x: 0 }}
+                                    exit={{ opacity: 0, scale: 0.9, x: 20 }}
+                                    className="flex items-center gap-2 bg-slate-900 dark:bg-slate-700 p-2 rounded-2xl shadow-2xl"
+                                >
+                                    <span className="text-white text-[10px] font-black uppercase px-4 border-r border-white/20">{selectedIds.length} {t('common.selected')}</span>
+                                    <button
+                                        onClick={() => {
+                                            const selectedItems = items?.filter((i: any) => selectedIds.includes(i.id!)) || [];
+                                            setSelectedItemForLabel(selectedItems);
+                                            setIsLabelModalOpen(true);
+                                        }}
+                                        className="p-3 text-white hover:bg-white/10 rounded-xl transition-colors"
+                                        title={t('inventory.print_label')}
+                                    >
+                                        <QrCode size={18} />
+                                    </button>
+                                    {canDelete('inventory') && (
+                                        <button
+                                            onClick={handleBulkDeleteClick}
+                                            className="p-3 text-rose-400 hover:bg-rose-500 hover:text-white rounded-xl transition-colors"
+                                            title={t('common.delete')}
+                                        >
+                                            <Trash size={18} />
+                                        </button>
+                                    )}
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+
+                        <div className="flex items-center gap-3">
+                            <motion.button
+                                whileHover={{ scale: 1.05 }}
+                                whileTap={{ scale: 0.95 }}
+                                onClick={handleAutoFillBarcodes}
+                                className="p-4 bg-white/50 dark:bg-slate-800/50 text-purple-500 rounded-2xl border border-white dark:border-slate-700 shadow-xl"
+                                title={t('inventory.auto_fill_barcodes')}
+                            >
+                                <Wand2 size={20} />
+                            </motion.button>
+                            
+                            <input type="file" ref={fileInputRef} className="hidden" onChange={handleImportExcel} accept=".xlsx, .xls, .csv" />
+                            <motion.button
+                                whileHover={{ scale: 1.05 }}
+                                whileTap={{ scale: 0.95 }}
+                                onClick={() => fileInputRef.current?.click()}
+                                disabled={isImporting}
+                                className="p-4 bg-white/50 dark:bg-slate-800/50 text-emerald-500 rounded-2xl border border-white dark:border-slate-700 shadow-xl"
+                            >
+                                <Upload size={20} />
+                            </motion.button>
+
+                            <motion.button
+                                whileHover={{ scale: 1.05 }}
+                                whileTap={{ scale: 0.95 }}
+                                onClick={() => navigate('/inventory/add')}
+                                className="flex items-center gap-3 bg-blue-600 text-white px-8 py-4 rounded-2xl shadow-2xl shadow-blue-500/20 font-black text-xs uppercase tracking-widest"
+                            >
+                                <Plus size={18} />
+                                {t('common.add')}
+                            </motion.button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
-            {/* In Market Mode, show tabs to manage Items vs Categories */}
-            {settings.cafeMode && (
-                <div className="flex gap-4 border-b border-slate-200 dark:border-slate-700 mb-6 pb-2">
-                    <button
-                        onClick={() => setActiveTab('items')}
-                        className={`flex items-center gap-2 px-4 py-2 font-medium transition-colors border-b-2 ${activeTab === 'items' ? 'text-blue-600 border-blue-600 dark:text-blue-400 dark:border-blue-400' : 'text-slate-500 border-transparent hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300'}`}
+            {/* Stats Ribbon */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {[
+                    { label: t('inventory.total_items') || 'Total Products', value: inventoryStats?.total || 0, icon: Box, color: 'blue' },
+                    { label: t('inventory.low_stock') || 'Low Stock Alerts', value: inventoryStats?.lowStock || 0, icon: AlertTriangle, color: 'rose' },
+                    { label: t('inventory.stock_value') || 'Stock Value (Cost)', value: formatCurrency(inventoryStats?.totalValue || 0), icon: Banknote, color: 'emerald' }
+                ].map((stat, i) => (
+                    <motion.div
+                        key={i}
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.1 }}
+                        className="bg-white/40 dark:bg-slate-800/20 backdrop-blur-xl p-6 rounded-[2.5rem] shadow-xl border border-white/50 dark:border-slate-700/30 flex items-center gap-6"
                     >
-                        <LayoutGrid size={18} />
-                        {t('sidebar.menu', { defaultValue: 'Menu Items' })}
-                    </button>
-                    <button
-                        onClick={() => setActiveTab('categories')}
-                        className={`flex items-center gap-2 px-4 py-2 font-medium transition-colors border-b-2 ${activeTab === 'categories' ? 'text-blue-600 border-blue-600 dark:text-blue-400 dark:border-blue-400' : 'text-slate-500 border-transparent hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300'}`}
-                    >
-                        <Tags size={18} />
-                        {t('inventory.categories') || 'Categories'}
-                    </button>
+                        <div className={clsx(
+                            "p-4 rounded-2xl shadow-lg",
+                            stat.color === 'blue' ? "bg-blue-500 text-white" :
+                            stat.color === 'rose' ? "bg-rose-500 text-white shadow-rose-500/20" : "bg-emerald-500 text-white shadow-emerald-500/20"
+                        )}>
+                            <stat.icon size={24} />
+                        </div>
+                        <div>
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{stat.label}</p>
+                            <p className="text-2xl font-black text-slate-900 dark:text-white tracking-tighter">{stat.value}</p>
+                        </div>
+                    </motion.div>
+                ))}
+            </div>
+
+            {/* Main Tabs & View Toggle */}
+            <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+                <div className="flex p-1.5 bg-slate-200/50 dark:bg-slate-800/50 backdrop-blur-md rounded-2xl border border-slate-200/50 dark:border-slate-700/50 w-full md:w-auto">
+                    {[
+                        { id: 'items', label: t('inventory.items') || 'Products', icon: Box },
+                        { id: 'categories', label: t('inventory.categories'), icon: Tags }
+                    ].map((tab) => (
+                        <button
+                            key={tab.id}
+                            onClick={() => setActiveTab(tab.id as any)}
+                            className={clsx(
+                                "flex-1 md:flex-none flex items-center justify-center gap-3 px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all duration-300",
+                                activeTab === tab.id 
+                                    ? 'bg-white dark:bg-slate-700 shadow-xl text-blue-600 dark:text-blue-400' 
+                                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                            )}
+                        >
+                            <tab.icon size={16} />
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+
+                <div className="flex items-center gap-4 w-full md:w-auto">
+                    <div className="relative flex-1 group min-w-[200px] md:min-w-[400px]">
+                        <Search className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={20} />
+                        <input
+                            type="text"
+                            placeholder={t('inventory.search_placeholder')}
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            className="w-full pl-16 pr-6 py-4 bg-white/40 dark:bg-slate-800/20 backdrop-blur-xl border border-white/50 dark:border-slate-700/30 rounded-2xl font-bold text-sm outline-none focus:ring-4 focus:ring-blue-500/10 transition-all dark:text-white"
+                        />
+                    </div>
+
+                    <div className="flex p-1 bg-slate-200/50 dark:bg-slate-800/50 rounded-2xl border border-slate-200/50 dark:border-slate-700/50">
+                        <button
+                            onClick={() => setViewMode('list')}
+                            className={clsx(
+                                "p-3 rounded-xl transition-all",
+                                viewMode === 'list' ? 'bg-white dark:bg-slate-700 shadow-lg text-blue-600' : 'text-slate-400'
+                            )}
+                        >
+                            <List size={20} />
+                        </button>
+                        <button
+                            onClick={() => setViewMode('grid')}
+                            className={clsx(
+                                "p-3 rounded-xl transition-all",
+                                viewMode === 'grid' ? 'bg-white dark:bg-slate-700 shadow-lg text-blue-600' : 'text-slate-400'
+                            )}
+                        >
+                            <LayoutGrid size={20} />
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            {/* Content Area */}
+            <AnimatePresence mode="wait">
+                {activeTab === 'categories' ? (
+                    <motion.div key="categories" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
+                        <CategoryTab />
+                    </motion.div>
+                ) : (
+                    <motion.div key="items" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}>
+                        {viewMode === 'list' ? (
+                            <div className="bg-white/40 dark:bg-slate-800/20 backdrop-blur-2xl rounded-[3rem] shadow-2xl border border-white/50 dark:border-slate-700/30 overflow-hidden">
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left whitespace-nowrap">
+                                        <thead>
+                                            <tr className="border-b border-slate-100 dark:border-slate-700/50">
+                                                <th className="p-6 w-12 text-center">
+                                                    <input
+                                                        type="checkbox"
+                                                        className="w-5 h-5 rounded-lg border-slate-300 text-blue-600"
+                                                        checked={items && items.length > 0 && items.every((i: any) => selectedIds.includes(i.id!))}
+                                                        onChange={toggleSelectAll}
+                                                    />
+                                                </th>
+                                                <th className="p-6 text-[10px] font-black uppercase tracking-widest text-slate-400">{t('inventory.item_name')}</th>
+                                                <th className="p-6 text-[10px] font-black uppercase tracking-widest text-slate-400">{t('inventory.barcode')}</th>
+                                                <th className="p-6 text-[10px] font-black uppercase tracking-widest text-slate-400">{t('inventory.stock')}</th>
+                                                <th className="p-6 text-[10px] font-black uppercase tracking-widest text-slate-400">{t('inventory.sale_price')}</th>
+                                                <th className="p-6 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">{t('common.actions')}</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-50 dark:divide-slate-800/50">
+                                            {loading || !items ? (
+                                                Array.from({ length: 5 }).map((_, i) => (
+                                                    <tr key={i} className="animate-pulse">
+                                                        <td className="p-6"><Skeleton width={20} height={20} /></td>
+                                                        <td className="p-6"><Skeleton width={200} height={20} /></td>
+                                                        <td className="p-6"><Skeleton width={120} height={20} /></td>
+                                                        <td className="p-6"><Skeleton width={80} height={20} /></td>
+                                                        <td className="p-6"><Skeleton width={100} height={20} /></td>
+                                                        <td className="p-6 text-right"><Skeleton width={100} height={32} /></td>
+                                                    </tr>
+                                                ))
+                                            ) : (
+                                                items.map((item: Item, idx: number) => (
+                                                    <motion.tr 
+                                                        key={item.id}
+                                                        initial={{ opacity: 0 }}
+                                                        animate={{ opacity: 1 }}
+                                                        transition={{ delay: idx * 0.05 }}
+                                                        className="hover:bg-slate-50/50 dark:hover:bg-slate-700/30 transition-all group"
+                                                    >
+                                                        <td className="p-6 text-center">
+                                                            <input
+                                                                type="checkbox"
+                                                                className="w-5 h-5 rounded-lg border-slate-300 text-blue-600"
+                                                                checked={selectedIds.includes(item.id!)}
+                                                                onChange={() => toggleSelect(item.id!)}
+                                                            />
+                                                        </td>
+                                                        <td className="p-6">
+                                                            <div className="flex items-center gap-4">
+                                                                {item.image && (
+                                                                    <img src={item.image} className="w-10 h-10 rounded-lg object-cover border border-slate-200" alt="" />
+                                                                )}
+                                                                <div>
+                                                                    <p className="font-black dark:text-white uppercase tracking-tight">{item.name}</p>
+                                                                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">{item.itemCode || '---'}</p>
+                                                                </div>
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-6">
+                                                            <span className="font-mono text-[10px] font-black bg-slate-100 dark:bg-slate-900 px-3 py-1 rounded-lg text-slate-400 tracking-widest">
+                                                                {item.barcode || '---'}
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-6">
+                                                            <div className={clsx(
+                                                                "flex items-center gap-2 px-3 py-1 rounded-full w-fit text-[9px] font-black uppercase tracking-widest border",
+                                                                (item.stock || 0) <= (item.minStock || 0) 
+                                                                    ? "bg-rose-500/10 text-rose-500 border-rose-500/20" 
+                                                                    : "bg-emerald-500/10 text-emerald-500 border-emerald-500/20"
+                                                            )}>
+                                                                <div className={clsx("w-1.5 h-1.5 rounded-full", (item.stock || 0) <= (item.minStock || 0) ? "bg-rose-500 animate-pulse" : "bg-emerald-500")} />
+                                                                {item.stock} {t('inventory.units')}
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-6">
+                                                            <p className="text-lg font-black text-blue-600 dark:text-blue-400 tracking-tighter">{formatCurrency(item.salePrice)}</p>
+                                                        </td>
+                                                        <td className="p-6 text-right">
+                                                            <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-all">
+                                                                {canUpdate('inventory') && (
+                                                                    <button onClick={() => navigate(`/inventory/edit/${item.id}`)} className="p-3 bg-white dark:bg-slate-800 text-blue-600 rounded-xl shadow-lg border border-slate-100 dark:border-slate-700 hover:scale-110 transition-transform"><Edit size={16} /></button>
+                                                                )}
+                                                                <button onClick={() => { setSelectedItemForLabel([item]); setIsLabelModalOpen(true); }} className="p-3 bg-white dark:bg-slate-800 text-indigo-600 rounded-xl shadow-lg border border-slate-100 dark:border-slate-700 hover:scale-110 transition-transform"><QrCode size={16} /></button>
+                                                                {canDelete('inventory') && (
+                                                                    <button onClick={() => handleDeleteClick(item.id!)} className="p-3 bg-white dark:bg-slate-800 text-rose-500 rounded-xl shadow-lg border border-slate-100 dark:border-slate-700 hover:scale-110 transition-transform"><Trash size={16} /></button>
+                                                                )}
+                                                            </div>
+                                                        </td>
+                                                    </motion.tr>
+                                                ))
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-8">
+                                {items?.map((item: Item, idx: number) => (
+                                    <motion.div
+                                        key={item.id}
+                                        initial={{ opacity: 0, scale: 0.95 }}
+                                        animate={{ opacity: 1, scale: 1 }}
+                                        transition={{ delay: idx * 0.05 }}
+                                        className={clsx(
+                                            "bg-white/40 dark:bg-slate-800/20 backdrop-blur-2xl p-6 rounded-[2.5rem] shadow-2xl border transition-all group relative",
+                                            selectedIds.includes(item.id!) ? "border-blue-500/50 shadow-blue-500/10" : "border-white/50 dark:border-slate-700/30"
+                                        )}
+                                    >
+                                        <div className="flex justify-between items-start mb-6">
+                                            <div className="relative">
+                                                <div className="w-16 h-16 bg-blue-500/10 rounded-2xl flex items-center justify-center border border-blue-500/20 overflow-hidden">
+                                                    {item.image ? (
+                                                        <img src={item.image} className="w-full h-full object-cover" alt="" />
+                                                    ) : (
+                                                        <Box size={24} className="text-blue-500" />
+                                                    )}
+                                                </div>
+                                                <input
+                                                    type="checkbox"
+                                                    className="absolute -top-2 -left-2 w-6 h-6 rounded-lg border-slate-300 text-blue-600 shadow-xl opacity-0 group-hover:opacity-100 transition-opacity"
+                                                    checked={selectedIds.includes(item.id!)}
+                                                    onChange={() => toggleSelect(item.id!)}
+                                                />
+                                            </div>
+                                            <div className="text-right">
+                                                <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1">{t('common.price')}</p>
+                                                <p className="text-xl font-black text-blue-600 tracking-tighter">{formatCurrency(item.salePrice)}</p>
+                                            </div>
+                                        </div>
+
+                                        <h3 className="text-xl font-black dark:text-white uppercase tracking-tight mb-2 line-clamp-1">{item.name}</h3>
+                                        <div className="flex items-center gap-2 mb-6">
+                                            <span className="font-mono text-[9px] font-black text-slate-400 uppercase bg-slate-100 dark:bg-slate-900 px-2 py-0.5 rounded tracking-widest">{item.barcode || 'NO BARCODE'}</span>
+                                            {item.location && (
+                                                <span className="flex items-center gap-1 text-[8px] font-black text-slate-400 uppercase tracking-widest">
+                                                    <MapPin size={10} /> {item.location}
+                                                </span>
+                                            )}
+                                        </div>
+
+                                        <div className={clsx(
+                                            "flex items-center justify-between p-4 rounded-2xl border mb-6",
+                                            (item.stock || 0) <= (item.minStock || 0) 
+                                                ? "bg-rose-500/5 border-rose-500/10" 
+                                                : "bg-emerald-500/5 border-emerald-500/10"
+                                        )}>
+                                            <div className="flex items-center gap-3">
+                                                <div className={clsx("w-2 h-2 rounded-full", (item.stock || 0) <= (item.minStock || 0) ? "bg-rose-500 animate-pulse" : "bg-emerald-500")} />
+                                                <p className="text-[10px] font-black dark:text-white uppercase tracking-widest">{t('inventory.stock')}</p>
+                                            </div>
+                                            <p className={clsx("text-lg font-black tracking-tighter", (item.stock || 0) <= (item.minStock || 0) ? "text-rose-500" : "text-emerald-500")}>
+                                                {item.stock} <span className="text-[10px] font-bold text-slate-400">{t('units.pc')}</span>
+                                            </p>
+                                        </div>
+
+                                        <div className="flex gap-2">
+                                            {canUpdate('inventory') && (
+                                                <button onClick={() => navigate(`/inventory/edit/${item.id}`)} className="flex-1 flex items-center justify-center gap-2 py-3 bg-white dark:bg-slate-700 border border-slate-100 dark:border-slate-600 rounded-xl text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-400 hover:bg-blue-600 hover:text-white transition-all">
+                                                    <Edit size={14} /> {t('common.edit')}
+                                                </button>
+                                            )}
+                                            <button onClick={() => { setSelectedItemForLabel([item]); setIsLabelModalOpen(true); }} className="p-3 bg-white dark:bg-slate-700 border border-slate-100 dark:border-slate-600 rounded-xl text-indigo-500 hover:bg-indigo-500 hover:text-white transition-all shadow-xl shadow-indigo-500/10">
+                                                <QrCode size={16} />
+                                            </button>
+                                        </div>
+                                    </motion.div>
+                                ))}
+                            </div>
+                        )}
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* Pagination */}
+            {!loading && activeTab === 'items' && totalPages > 1 && (
+                <div className="mt-8 flex justify-center">
+                    <Pagination
+                        currentPage={currentPage}
+                        totalPages={totalPages}
+                        onPageChange={setCurrentPage}
+                        totalItems={totalItems}
+                        itemsPerPage={pageSize}
+                        onItemsPerPageChange={setPageSize}
+                    />
                 </div>
             )}
 
-            {activeTab === 'categories' ? (
-                <CategoryTab />
-            ) : (
-                <>
-                    <div className="flex gap-4 mb-6">
-                        <div className="flex-1 relative">
-                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
-                            <input
-                                type="text"
-                                placeholder={t('inventory.search_placeholder')}
-                                value={search}
-                                onChange={(e) => setSearch(e.target.value)}
-                                className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
-                            />
-                        </div>
-                    </div>
-
-                    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-left whitespace-nowrap min-w-[800px]">
-                                <thead className="bg-slate-50 dark:bg-slate-900/50 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider border-b border-slate-200 dark:border-slate-700">
-                                    <tr>
-                                        <th className="p-4 w-12 text-center">
-                                            <input
-                                                type="checkbox"
-                                                className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                                                checked={items && items.length > 0 && items.every((i: any) => selectedIds.includes(i.id!))}
-                                                onChange={toggleSelectAll}
-                                            />
-                                        </th>
-                                        <th className="p-4 font-semibold">{t('inventory.item_name')}</th>
-                                        <th className="p-4 font-semibold">{t('inventory.barcode')}</th>
-                                        <th className="p-4 font-semibold">{t('inventory.item_code') || 'Item Code'}</th>
-                                        <th className="p-4 font-semibold">{t('inventory.stock')}</th>
-                                        <th className="p-4 font-semibold">{t('inventory.sale_price')}</th>
-                                        <th className="p-4 font-semibold">{t('purchases.supplier') || 'Supplier'}</th>
-                                        <th className="p-4 font-semibold">{t('inventory.location')}</th>
-                                        <th className="p-4 font-semibold text-right">{t('inventory.actions')}</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
-                                    {!items ? (
-                                        Array.from({ length: 5 }).map((_: any, i: any) => (
-                                            <tr key={i} className="animate-pulse">
-                                                <td className="p-4"><Skeleton width={20} height={20} /></td>
-                                                <td className="p-4"><Skeleton width={200} height={20} /></td>
-                                                <td className="p-4"><Skeleton width={120} height={20} /></td>
-                                                <td className="p-4"><Skeleton width={80} height={20} /></td>
-                                                <td className="p-4"><Skeleton width={80} height={20} /></td>
-                                                <td className="p-4"><Skeleton width={100} height={20} /></td>
-                                                <td className="p-4"><Skeleton width={80} height={20} /></td>
-                                                <td className="p-4"><Skeleton width={100} height={20} /></td>
-                                                <td className="p-4"><Skeleton width={120} height={36} /></td>
-                                            </tr>
-                                        ))
-                                    ) : items.length === 0 ? (
-                                        <tr>
-                                            <td colSpan={9}>
-                                                <EmptyState
-                                                    title={search ? t('common.no_results') : t('inventory.no_items')}
-                                                    description={search ? t('common.try_different_search') : (t('inventory.no_items_desc') || "Start by adding items to your inventory.")}
-                                                    icon={PackageOpen}
-                                                    actionLabel={!search && hasPermission('inventory_manage') ? t('common.add') : undefined}
-                                                    onAction={() => navigate('/inventory/add')}
-                                                />
-                                            </td>
-                                        </tr>
-                                    ) : (
-                                        items.map((item: any, rowIndex: any) => (
-                                            <tr key={item.id} className={`hover:bg-slate-50/80 dark:hover:bg-slate-700/30 transition-colors group ${selectedIds.includes(item.id!) ? 'bg-blue-50/50 dark:bg-blue-900/10' : ''}`}>
-                                                <td {...getGridCellProps(rowIndex, 0)} className="p-4 text-center outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500 rounded-l-lg">
-                                                    <input
-                                                        type="checkbox"
-                                                        className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                                                        checked={selectedIds.includes(item.id!)}
-                                                        onChange={() => toggleSelect(item.id!)}
-                                                        // Allow Enter key to toggle checkbox
-                                                        onKeyDown={(e) => {
-                                                            if (e.key === 'Enter') toggleSelect(item.id!);
-                                                        }}
-                                                    />
-                                                </td>
-                                                <td {...getGridCellProps(rowIndex, 1)} className="p-4 font-medium dark:text-white outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500 text-sm">{item.name}</td>
-                                                <td {...getGridCellProps(rowIndex, 2)} className="p-4 text-slate-500 dark:text-slate-400 font-mono text-xs outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500">{item.barcode || '-'}</td>
-                                                <td {...getGridCellProps(rowIndex, 3)} className="p-4 text-slate-500 dark:text-slate-400 font-mono text-xs outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500">{item.itemCode || '-'}</td>
-                                                <td {...getGridCellProps(rowIndex, 4)} className="p-4 outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500">
-                                                    <span className={`px-2 py-1.5 rounded-md text-xs font-semibold ${item.stock <= item.minStock
-                                                        ? 'bg-red-50 text-red-600 border border-red-200 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400'
-                                                        : 'bg-green-50 text-green-600 border border-green-200 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400'
-                                                        }`}>
-                                                        {item.stock} <span className="text-[10px] font-medium uppercase opacity-70 ml-1">{t('inventory.units')}</span>
-                                                    </span>
-                                                </td>
-                                                <td {...getGridCellProps(rowIndex, 5)} className="p-4 dark:text-slate-200 outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500 text-sm font-medium">{formatCurrency(item.salePrice)}</td>
-                                                <td {...getGridCellProps(rowIndex, 6)} className="p-4 text-slate-500 dark:text-slate-400 outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500 text-sm">
-                                                    {item.supplierId && suppliers ? suppliers.find(s => s.id === item.supplierId)?.name || '-' : '-'}
-                                                </td>
-                                                <td {...getGridCellProps(rowIndex, 7)} className="p-4 text-slate-500 dark:text-slate-400 outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500 text-sm">{item.location || '-'}</td>
-                                                <td {...getGridCellProps(rowIndex, 8)} className="p-4 flex gap-2 justify-end outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500 rounded-r-lg">
-                                                    {hasPermission('inventory_edit') && (
-                                                        <button
-                                                            onClick={() => navigate(`/inventory/edit/${item.id}`)}
-                                                            className="p-2 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg"
-                                                            title={t('common.edit')}
-                                                        >
-                                                            <Edit size={18} />
-                                                        </button>
-                                                    )}
-                                                    {(isAdmin || hasPermission('inventory_delete')) && (
-                                                        <button
-                                                            onClick={() => handleDeleteClick(item.id!)}
-                                                            className="p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg"
-                                                            title={t('common.delete')}
-                                                        >
-                                                            <Trash size={18} />
-                                                        </button>
-                                                    )}
-                                                    <button
-                                                        onClick={() => {
-                                                            setSelectedItemForLabel([item]);
-                                                            setIsLabelModalOpen(true);
-                                                        }}
-                                                        className="p-2 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg"
-                                                        title={t('inventory.print_label')}
-                                                    >
-                                                        <QrCode size={18} />
-                                                    </button>
-                                                </td>
-                                            </tr>
-                                        ))
-                                    )}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    {/* Pagination Controls */}
-                    {totalPages > 1 && (
-                        <Pagination
-                            currentPage={currentPage}
-                            totalPages={totalPages}
-                            onPageChange={setCurrentPage}
-                            totalItems={totalItems}
-                            itemsPerPage={pageSize}
-                            onItemsPerPageChange={setPageSize}
-                        />
+            {/* Empty State */}
+            {!loading && activeTab === 'items' && items?.length === 0 && (
+                <div className="py-40 text-center bg-white/40 dark:bg-slate-800/20 backdrop-blur-xl rounded-[4rem] border-4 border-dashed border-slate-200 dark:border-slate-800 max-w-4xl mx-auto">
+                    <PackageOpen size={80} strokeWidth={1} className="mx-auto mb-6 text-slate-300" />
+                    <h3 className="text-2xl font-black dark:text-white uppercase tracking-tighter mb-2">{search ? t('common.no_results') : t('inventory.no_items')}</h3>
+                    <p className="text-slate-500 font-medium mb-8">{search ? t('common.try_different_search') : t('inventory.no_items_desc')}</p>
+                    {canCreate('inventory') && !search && (
+                        <button
+                            onClick={() => navigate('/inventory/add')}
+                            className="bg-blue-600 text-white px-10 py-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-2xl shadow-blue-500/20"
+                        >
+                            {t('common.add_your_first')}
+                        </button>
                     )}
-                </>
+                </div>
             )}
 
+            {/* Modals */}
             <ConfirmationModal
                 isOpen={!!itemToDelete}
                 onClose={() => setItemToDelete(null)}
@@ -555,7 +742,7 @@ const ItemList: React.FC = () => {
                 onClose={() => setIsLabelModalOpen(false)}
                 items={selectedItemForLabel}
             />
-        </div >
+        </div>
     );
 };
 

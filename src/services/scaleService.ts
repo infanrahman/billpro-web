@@ -191,12 +191,25 @@ class ScaleService {
                 return { success: false, message: `Download failed: ${err.message}`, plus: [] };
             }
         }
-
         return { success: false, message: 'Electron IPC not found', plus: [] };
     }
 
-    async bulkSyncAllScales(items: Item[]): Promise<{ totalScales: number, successful: number, failed: number }> {
-        const scales = await db.scales.toArray();
+    async readWeight(scale: Scale): Promise<{ success: boolean; data?: number; message: string }> {
+        if (window.electron?.scaleReadWeight) {
+            try {
+                const result = await window.electron.scaleReadWeight(scale.ipAddress, scale.port);
+                await logScaleAction(scale.ipAddress, 'READ_WEIGHT', undefined, result.success ? 'success' : 'failed', result.message);
+                return result;
+            } catch (err: any) {
+                await logScaleAction(scale.ipAddress, 'READ_WEIGHT', undefined, 'failed', err.message);
+                return { success: false, message: err.message || 'Unknown error' };
+            }
+        }
+        return { success: false, message: 'IPC Bridge not connected' };
+    }
+
+    async bulkSyncAllScales(items: Item[], targetScales?: Scale[]): Promise<{ totalScales: number, successful: number, failed: number }> {
+        const scales = targetScales || await db.scales.toArray();
         if (scales.length === 0) {
             return { totalScales: 0, successful: 0, failed: 0 };
         }

@@ -1,9 +1,11 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { db, createRecordMetadata } from '../services/db';
+import { db, createRecordMetadata, matchesActiveScope } from '../services/db';
 import type { Invoice, InvoiceItem, Item } from '../services/db';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Plus, Search, Trash2, FileText, ShoppingCart, RotateCcw, DollarSign, Save, Printer, ShieldCheck, ShieldAlert, Clock } from 'lucide-react';
+import { calculateLineItem, calculateDocumentTotals } from '../utils/financials';
+import { Plus, Search, Trash2, FileText, ShoppingCart, RotateCcw, DollarSign, Save, Printer, ShieldCheck, ShieldAlert, Clock, Upload, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNotification } from '../contexts/NotificationContext';
 import { useSettings } from '../contexts/SettingsContext';
@@ -11,7 +13,7 @@ import Modal from '../components/UI/Modal';
 import SalesHistory from './Transactions/SalesHistory';
 import { useAuth } from '../contexts/AuthContext';
 
-import { useGridNavigation } from '../hooks/useGridNavigation';
+// import { useGridNavigation } from '../hooks/useGridNavigation';
 import { generateInvoicePDF } from '../services/invoiceGenerator';
 import Skeleton from '../components/UI/Skeleton';
 import EmptyState from '../components/UI/EmptyState';
@@ -22,31 +24,48 @@ const Sales = () => {
     const navigate = useNavigate();
     const { addToast } = useNotification();
     const { formatCurrency, formatDate, settings } = useSettings();
-    const { activeBranchId } = useAuth();
+    const { canCreate, canUpdate, activeCompanyId, activeBranchId, activeBranch } = useAuth();
     const [activeTab, setActiveTab] = useState<'order' | 'invoice' | 'return' | 'payment'>('invoice');
 
     // Check if ZATCA is enabled
-    const isZatcaEnabled = useMemo(() => {
-        try {
+    const [isZatcaEnabled, setIsZatcaEnabled] = useState(false);
+    useEffect(() => {
+        const checkZatca = async () => {
+            if (window.electron && window.electron.zatca) {
+                const cfg = await window.electron.zatca.getConfig();
+                if (cfg && (cfg.status === 'LIVE' || cfg.status === 'COMPLIANCE_OBTAINED')) {
+                    setIsZatcaEnabled(true);
+                    return;
+                }
+            }
+            // Fallback
             const cfg = localStorage.getItem('zatca_config');
-            if (!cfg) return false;
-            const { status } = JSON.parse(cfg);
-            return status === 'LIVE' || status === 'COMPLIANCE_OBTAINED';
-        } catch { return false; }
+            if (cfg) {
+                const { status } = JSON.parse(cfg);
+                setIsZatcaEnabled(status === 'LIVE' || status === 'COMPLIANCE_OBTAINED');
+            }
+        };
+        checkZatca();
     }, []);
 
     // Stats — use indexed 'type' field for fast counts (no full table scans)
     const stats = {
-        orders: useLiveQuery(() => db.invoices.where('type').equals('order').count()) || 0,
-        invoices: useLiveQuery(() => db.invoices.where('type').equals('invoice').count()) || 0,
-        returns: useLiveQuery(() => db.invoices.where('type').equals('return').count()) || 0,
-        payments: useLiveQuery(() => db.customerPayments.count()) || 0,
+        orders: useLiveQuery(() => db.invoices.where('type').equals('order').and(inv => matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !inv.deletedAt).count(), [activeCompanyId, activeBranchId, activeBranch?.isMaster]) || 0,
+        invoices: useLiveQuery(() => db.invoices.where('type').equals('invoice').and(inv => matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !inv.deletedAt).count(), [activeCompanyId, activeBranchId, activeBranch?.isMaster]) || 0,
+        returns: useLiveQuery(() => db.invoices.where('type').equals('return').and(inv => matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !inv.deletedAt).count(), [activeCompanyId, activeBranchId, activeBranch?.isMaster]) || 0,
+        payments: useLiveQuery(() => db.customerPayments.filter(payment => matchesActiveScope(payment, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !payment.deletedAt).count(), [activeCompanyId, activeBranchId, activeBranch?.isMaster]) || 0,
     };
 
     // Modal & Form State
     const [isModalOpen, setIsModalOpen] = useState(false);
 
     const [searchTerm, setSearchTerm] = useState('');
+    const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
+
+    useEffect(() => {
+        const handler = setTimeout(() => setDebouncedSearchTerm(searchTerm), 300);
+        return () => clearTimeout(handler);
+    }, [searchTerm]);
     // const [editingId, setEditingId] = useState<string | null>(null); // For future use
     const [customerName, setCustomerName] = useState('');
     const [customerId, setCustomerId] = useState<string | undefined>(undefined);
@@ -68,33 +87,61 @@ const Sales = () => {
     const [newItemCost, setNewItemCost] = useState('');
     const [newItemPrice, setNewItemPrice] = useState('');
     const [newItemStock, setNewItemStock] = useState('');
+    const [newItemImage, setNewItemImage] = useState('');
 
-    // Fetch Lists — branch-scoped with soft-delete filter
-    const customers = useLiveQuery(() => db.customers.where('branchId').equals(activeBranchId).filter((c: any) => !c.deletedAt).toArray(), [activeBranchId]);
-    const inventory = useLiveQuery(() => db.items.where('branchId').equals(activeBranchId).filter((i: any) => !i.deletedAt).toArray(), [activeBranchId]);
+    const handleNewItemImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
 
-    // Derived Lists — use indexed 'type' field, branch-scoped, with deletedAt filter
+        if (file.size > 700 * 1024) {
+            addToast('Image size must be less than 700KB', 'error');
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            setNewItemImage(reader.result as string);
+        };
+        reader.readAsDataURL(file);
+    };
+
+    // Fetch Lists — globally scoped with soft-delete filter, lazy-loaded when modal is open
+    const customers = useLiveQuery(async () => {
+        if (!isModalOpen) return [];
+        return db.customers.filter((c: any) => matchesActiveScope(c, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !c.deletedAt).toArray();
+    }, [isModalOpen, activeCompanyId, activeBranchId, activeBranch?.isMaster]);
+    const inventory = useLiveQuery(async () => {
+        if (!isModalOpen) return [];
+        return db.items.filter((i: any) => matchesActiveScope(i, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !i.deletedAt).toArray();
+    }, [isModalOpen, activeCompanyId, activeBranchId, activeBranch?.isMaster]);
+
+    // Derived Lists — use indexed 'type' field, globally scoped, with deletedAt filter
     const currentList = useLiveQuery(async () => {
         return db.invoices
             .where('type')
             .equals(activeTab)
-            .filter((inv: any) => !inv.deletedAt && inv.branchId === activeBranchId)
+            .filter((inv: any) => matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !inv.deletedAt)
             .reverse()
             .sortBy('createdAt');
-    }, [activeTab, activeBranchId]);
+    }, [activeTab, activeCompanyId, activeBranchId, activeBranch?.isMaster]);
 
     // Grid Nav
-    const { getGridCellProps } = useGridNavigation({
+    /* const { getGridCellProps } = useGridNavigation({
         rows: currentList?.length || 0,
         cols: 6
-    });
+    }); */
 
-    const paymentList = useLiveQuery(() => db.customerPayments.orderBy('date').reverse().toArray(), []);
+    const paymentList = useLiveQuery(async () => {
+        const rows = await db.customerPayments
+            .filter(payment => matchesActiveScope(payment, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !payment.deletedAt)
+            .toArray();
+        return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    }, [activeCompanyId, activeBranchId, activeBranch?.isMaster]);
 
     // Filtered Lists
     const filteredInventory = inventory?.filter((i: any) =>
-        (i.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (i.barcode || '').includes(searchTerm)
+        (i.name || '').toLowerCase().includes(debouncedSearchTerm.toLowerCase()) ||
+        (i.barcode || '').includes(debouncedSearchTerm)
     );
 
     // Infinite Scroll Logic
@@ -106,7 +153,7 @@ const Sales = () => {
     useEffect(() => {
         setVisibleItemsCount(50);
         if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
-    }, [searchTerm]);
+    }, [debouncedSearchTerm]);
 
     const visibleItems = filteredInventory?.slice(0, visibleItemsCount);
 
@@ -170,45 +217,41 @@ const Sales = () => {
     const totalAmount = items.reduce((sum: any, i: any) => sum + i.total, 0);
 
     const handleSave = async () => {
+        if (!canCreate('sales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         if (!customerName || items.length === 0) {
             addToast(t('sales.required_error'), 'error');
             return;
         }
 
-        const finalItems = items.map(item => {
-            const nominal = item.price * item.quantity;
-            const rate = item.taxRate || 0;
-            const type = item.taxType || 'exclusive';
+        const lineResults = items.map(item => calculateLineItem({
+            price: item.price,
+            quantity: item.quantity,
+            taxRate: item.taxRate || 0,
+            taxType: item.taxType || 'exclusive',
+            discount: 0,
+            discountType: 'fixed'
+        }, settings.applyTax));
 
-            let lineTax = 0;
-            let lineFinal = 0;
+        const totals = calculateDocumentTotals(lineResults, 0, 'fixed', settings.applyTax);
+        const finalItems = items.map((item, idx) => ({
+            ...item,
+            taxAmount: lineResults[idx].taxAmount,
+            netAmount: lineResults[idx].taxableAmount,
+            total: lineResults[idx].total
+        }));
 
-            if (settings.applyTax) {
-                if (type === 'exclusive') {
-                    lineTax = Math.round((nominal * (rate / 100)) * 100) / 100;
-                    lineFinal = Math.round((nominal + lineTax) * 100) / 100;
-                } else {
-                    const base = nominal / (1 + (rate / 100));
-                    lineTax = Math.round((nominal - base) * 100) / 100;
-                    lineFinal = Math.round(nominal * 100) / 100;
-                }
-            } else {
-                lineTax = 0;
-                lineFinal = nominal;
-            }
-
-            return {
-                ...item,
-                taxAmount: lineTax,
-                total: lineFinal
-            };
-        });
-
-        const totalTax = finalItems.reduce((sum, i) => sum + (i.taxAmount || 0), 0);
-        const totalGrand = finalItems.reduce((sum, i) => sum + i.total, 0);
+        const totalTax = totals.taxAmount;
+        const totalGrand = totals.grandTotal;
 
         // Generate proper sequential invoice number (same logic as POS)
-        const lastInvoice = await db.invoices.orderBy('createdAt').last();
+        const scopedInvoices = await db.invoices
+            .filter(inv => matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !inv.deletedAt)
+            .toArray();
+        const lastInvoice = scopedInvoices.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
         let nextNumber = 1;
         if (lastInvoice && lastInvoice.invoiceNumber) {
             const lastNumStr = lastInvoice.invoiceNumber.replace(/\D/g, '');
@@ -220,12 +263,11 @@ const Sales = () => {
 
         const invoiceData: Invoice = {
             ...createRecordMetadata(),
-            branchId: activeBranchId || '',
             invoiceNumber: seqInvoiceNumber,
             customerName,
             customerId,
             items: finalItems,
-            subTotal: totalAmount, 
+            subTotal: totals.subTotal, 
             taxAmount: totalTax,
             discountAmount: 0,
             grandTotal: totalGrand,
@@ -271,6 +313,64 @@ const Sales = () => {
             });
 
             addToast(activeTab === 'order' ? t('sales.order_created') : t('sales.return_created'), 'success');
+            
+            // --- ZATCA REPORTING (Background) ---
+            if (activeTab === 'return') {
+                 (async () => {
+                    try {
+                        const zatcaConfig = (window.electron && window.electron.zatca)
+                            ? await window.electron.zatca.getConfig()
+                            : JSON.parse(localStorage.getItem('zatca_config') || 'null');
+
+                        if (zatcaConfig) {
+                            const isLive = zatcaConfig.status === 'LIVE';
+                            const canReport = isLive || zatcaConfig.status === 'COMPLIANCE_OBTAINED';
+                            const activeCsid = isLive ? zatcaConfig.productionCsid : zatcaConfig.complianceCsid;
+                            const activeSecret = isLive ? zatcaConfig.productionSecret : zatcaConfig.complianceSecret;
+                            const env = zatcaConfig.environment || 'PRODUCTION';
+                            const activeBranchId = localStorage.getItem('currentBranchId') || 'default';
+
+                            if (canReport && zatcaConfig.privateKey && activeCsid) {
+                                const { generateZatcaXML } = await import('../services/zatcaXml');
+                                const { reportInvoice } = await import('../services/zatcaApi');
+
+                                // Get chaining state
+                                const branch = await db.branches.get(activeBranchId);
+                                if (!branch) return;
+
+                                const currentICV = (branch.invoiceCounter || 0) + 1;
+                                const currentPIH = branch.lastInvoiceHash || 'NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWIyNGEyOTVRMzYxYzI4Y2I1MjM=';
+
+                                // Note: safeBusinessDetails is not defined in Sales.tsx, need to fetch it
+                                const bizSaved = localStorage.getItem('businessDetails');
+                                const biz = bizSaved ? JSON.parse(bizSaved) : {};
+
+                                const { xml, hash, uuid } = await generateZatcaXML(
+                                    invoiceData,
+                                    { ...biz, gstin: (biz.gstin || biz.vatNo || '').trim() },
+                                    zatcaConfig.privateKey,
+                                    activeCsid,
+                                    currentPIH
+                                );
+
+                                const reportResult = await reportInvoice(xml, hash, uuid, activeCsid, activeSecret, env);
+
+                                await db.branches.update(activeBranchId, {
+                                    lastInvoiceHash: hash,
+                                    invoiceCounter: currentICV
+                                });
+
+                                if (reportResult.status === 'REPORTED') {
+                                    await db.invoices.update(seqInvoiceNumber, { zatcaStatus: 'REPORTED', zatcaHash: hash }); // Using seqInvoiceNumber or the ID if we have it
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.error("ZATCA Return Report Failed:", e);
+                    }
+                 })();
+            }
+
             setIsModalOpen(false);
             setItems([]);
             setCustomerName('');
@@ -282,85 +382,93 @@ const Sales = () => {
         }
     };
 
-
     return (
-        <div className="space-y-6">
-
-
+        <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="space-y-8 p-4 md:p-6"
+        >
             {/* Header */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 bg-white/50 dark:bg-slate-800/30 backdrop-blur-xl p-8 rounded-[2.5rem] border border-slate-200/50 dark:border-slate-700/50">
                 <div>
-                    <h1 className="text-2xl font-bold dark:text-white flex items-center gap-2">
-                        <ShoppingCart className="text-blue-600" />
+                    <div className="flex items-center gap-3 mb-2">
+                        <span className="text-[10px] font-black uppercase tracking-[0.3em] text-blue-600 dark:text-blue-400">Transactions</span>
+                        <div className="h-[2px] w-8 bg-blue-600/20" />
+                    </div>
+                    <h1 className="text-3xl md:text-4xl font-black dark:text-white tracking-tighter flex items-center gap-3 uppercase">
                         {t('sales.title')}
+                        <div className="p-2 bg-blue-600/10 text-blue-600 rounded-2xl">
+                            <ShoppingCart size={24} strokeWidth={2.5} />
+                        </div>
                     </h1>
-                    <p className="text-slate-500 dark:text-slate-400 text-sm">{t('sales.description')}</p>
+                    <p className="text-slate-500 dark:text-slate-400 mt-2 font-medium">{t('sales.description')}</p>
                 </div>
-                <div className="flex gap-2">
-
-                    <button
+                
+                <div className="flex flex-wrap gap-3">
+                    <motion.button
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
                         onClick={() => {
                             setActiveTab('order');
                             setIsModalOpen(true);
                         }}
-                        className="px-4 py-2 bg-blue-600 text-white rounded-lg flex items-center gap-2 hover:bg-blue-700"
+                        className="px-6 py-3 bg-blue-600 text-white rounded-[1.5rem] flex items-center gap-2 font-black uppercase tracking-widest text-[10px] shadow-xl shadow-blue-500/20 hover:bg-blue-700 transition-colors"
                     >
-                        <Plus size={20} /> {t('sales.new_order')}
-                    </button>
-                    <button
+                        <Plus size={18} strokeWidth={3} /> {t('sales.new_order')}
+                    </motion.button>
+                    <motion.button
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
                         onClick={() => {
                             setActiveTab('return');
                             setIsModalOpen(true);
                         }}
-                        className="px-4 py-2 bg-amber-600 text-white rounded-lg flex items-center gap-2 hover:bg-amber-700"
+                        className="px-6 py-3 bg-white dark:bg-slate-800 text-slate-700 dark:text-white rounded-[1.5rem] flex items-center gap-2 font-black uppercase tracking-widest text-[10px] border border-slate-200 dark:border-slate-700 shadow-xl hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
                     >
-                        <RotateCcw size={20} /> {t('sales.create_return')}
-                    </button>
+                        <RotateCcw size={18} strokeWidth={3} className="text-amber-500" /> {t('sales.create_return')}
+                    </motion.button>
                 </div>
             </div>
 
-            {/* Tabs */}
-            <div className="flex gap-2 border-b border-slate-200 dark:border-slate-700 overflow-x-auto pb-1">
-                <button
-                    onClick={() => setActiveTab('order')}
-                    className={`px-4 py-2 rounded-t-lg font-medium flex items-center gap-2 whitespace-nowrap ${activeTab === 'order'
-                        ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600 dark:bg-slate-800 dark:text-blue-400'
-                        : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
-                        }`}
-                >
-                    <ShoppingCart size={18} /> {t('sales.orders')} ({stats.orders})
-                </button>
-                <button
-                    onClick={() => setActiveTab('invoice')}
-                    className={`px-4 py-2 rounded-t-lg font-medium flex items-center gap-2 whitespace-nowrap ${activeTab === 'invoice'
-                        ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600 dark:bg-slate-800 dark:text-blue-400'
-                        : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
-                        }`}
-                >
-                    <FileText size={18} /> {t('sales.invoices')} ({stats.invoices})
-                </button>
-                <button
-                    onClick={() => setActiveTab('return')}
-                    className={`px-4 py-2 rounded-t-lg font-medium flex items-center gap-2 whitespace-nowrap ${activeTab === 'return'
-                        ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600 dark:bg-slate-800 dark:text-blue-400'
-                        : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
-                        }`}
-                >
-                    <RotateCcw size={18} /> {t('sales.returns')} ({stats.returns})
-                </button>
-                <button
-                    onClick={() => setActiveTab('payment')}
-                    className={`px-4 py-2 rounded-t-lg font-medium flex items-center gap-2 whitespace-nowrap ${activeTab === 'payment'
-                        ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600 dark:bg-slate-800 dark:text-blue-400'
-                        : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
-                        }`}
-                >
-                    <DollarSign size={18} /> {t('sales.payments_in')} ({stats.payments})
-                </button>
+            {/* Tabs Navigation */}
+            <div className="flex gap-2 p-2 bg-slate-100/50 dark:bg-slate-900/50 backdrop-blur-md rounded-3xl border border-slate-200/50 dark:border-slate-700/50 overflow-x-auto no-scrollbar">
+                {[
+                    { id: 'order', icon: ShoppingCart, label: t('sales.orders'), count: stats.orders },
+                    { id: 'invoice', icon: FileText, label: t('sales.invoices'), count: stats.invoices },
+                    { id: 'return', icon: RotateCcw, label: t('sales.returns'), count: stats.returns },
+                    { id: 'payment', icon: DollarSign, label: t('sales.payments_in'), count: stats.payments }
+                ].map((tab) => (
+                    <button
+                        key={tab.id}
+                        onClick={() => setActiveTab(tab.id as any)}
+                        className={`relative px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center gap-2 transition-all duration-300 whitespace-nowrap
+                            ${activeTab === tab.id ? 'text-white' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'}`}
+                    >
+                        {activeTab === tab.id && (
+                            <motion.div
+                                layoutId="activeTab"
+                                className="absolute inset-0 bg-blue-600 rounded-2xl shadow-lg shadow-blue-500/20"
+                                transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
+                            />
+                        )}
+                        <span className="relative z-10 flex items-center gap-2">
+                            <tab.icon size={16} strokeWidth={activeTab === tab.id ? 3 : 2} />
+                            {tab.label}
+                            <span className={`px-2 py-0.5 rounded-lg text-[9px] ${activeTab === tab.id ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-500'}`}>
+                                {tab.count}
+                            </span>
+                        </span>
+                    </button>
+                ))}
             </div>
 
             {/* Content Area */}
-            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 min-h-[400px] overflow-hidden">
+            <motion.div 
+                key={activeTab}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-white/70 dark:bg-slate-800/50 backdrop-blur-xl rounded-[2.5rem] shadow-2xl shadow-black/5 border border-slate-200/50 dark:border-slate-700/50 min-h-[500px] overflow-hidden"
+            >
                 {activeTab === 'invoice' && <SalesHistory onReturn={(inv) => {
                     setActiveTab('return');
                     setCustomerId(inv.customerId);
@@ -373,32 +481,32 @@ const Sales = () => {
                 {(activeTab === 'order' || activeTab === 'return') && (
                     <div className="overflow-x-auto">
                         <table className="w-full text-left">
-                            <thead className="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700">
-                                <tr>
-                                    <th className="p-4 font-semibold text-slate-600 dark:text-slate-300">{t('sales.date')}</th>
-                                    <th className="p-4 font-semibold text-slate-600 dark:text-slate-300">{activeTab === 'order' ? t('sales.order_no') : t('sales.return_no')}</th>
-                                    <th className="p-4 font-semibold text-slate-600 dark:text-slate-300">{t('sales.customer')}</th>
-                                    <th className="p-4 font-semibold text-slate-600 dark:text-slate-300">{t('sales.amount')}</th>
-                                    <th className="p-4 font-semibold text-slate-600 dark:text-slate-300">{t('sales.status')}</th>
-                                    {activeTab === 'return' && isZatcaEnabled && <th className="p-4 font-semibold text-slate-600 dark:text-slate-300">ZATCA</th>}
-                                    <th className="p-4 font-semibold text-slate-600 dark:text-slate-300 text-right">{t('common.actions')}</th>
+                            <thead>
+                                <tr className="border-b border-slate-100 dark:border-slate-700/50">
+                                    <th className="p-6 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{t('sales.date')}</th>
+                                    <th className="p-6 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{activeTab === 'order' ? t('sales.order_no') : t('sales.return_no')}</th>
+                                    <th className="p-6 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{t('sales.customer')}</th>
+                                    <th className="p-6 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{t('sales.amount')}</th>
+                                    <th className="p-6 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{t('sales.status')}</th>
+                                    {activeTab === 'return' && isZatcaEnabled && <th className="p-6 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Compliance</th>}
+                                    <th className="p-6 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 text-right">{t('common.actions')}</th>
                                 </tr>
                             </thead>
-                            <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+                            <tbody className="divide-y divide-slate-50 dark:divide-slate-700/30">
                                 {!currentList ? (
                                     Array.from({ length: 5 }).map((_: any, i: any) => (
                                         <tr key={i} className="animate-pulse">
-                                            <td className="p-4"><Skeleton width={100} height={20} /></td>
-                                            <td className="p-4"><Skeleton width={120} height={20} /></td>
-                                            <td className="p-4"><Skeleton width={150} height={20} /></td>
-                                            <td className="p-4"><Skeleton width={80} height={20} /></td>
-                                            <td className="p-4"><Skeleton width={80} height={20} /></td>
-                                            <td className="p-4"><Skeleton width={60} height={30} /></td>
+                                            <td className="p-6"><Skeleton width={100} height={20} className="rounded-lg" /></td>
+                                            <td className="p-6"><Skeleton width={120} height={20} className="rounded-lg" /></td>
+                                            <td className="p-6"><Skeleton width={150} height={20} className="rounded-lg" /></td>
+                                            <td className="p-6"><Skeleton width={80} height={20} className="rounded-lg" /></td>
+                                            <td className="p-6"><Skeleton width={80} height={20} className="rounded-lg" /></td>
+                                            <td className="p-6"><Skeleton width={100} height={20} className="rounded-lg" /></td>
                                         </tr>
                                     ))
                                 ) : currentList.length === 0 ? (
                                     <tr>
-                                        <td colSpan={6}>
+                                        <td colSpan={7}>
                                             <EmptyState
                                                 title={t('sales.no_records')}
                                                 description={activeTab === 'order' ? t('sales.no_orders_desc') || "No orders found." : t('sales.no_invoices_desc') || "No invoices found."}
@@ -412,126 +520,64 @@ const Sales = () => {
                                         </td>
                                     </tr>
                                 ) : (
-                                    currentList.map((invoice: any, rowIndex: any) => (
-                                        <tr key={invoice.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                                            <td
-                                                {...getGridCellProps(rowIndex, 0)}
-                                                className="p-4 text-slate-600 dark:text-slate-400 outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500 rounded-l-lg"
-                                            >
+                                    currentList.map((invoice: any, _rowIndex: any) => (
+                                        <tr key={invoice.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-700/30 transition-all group">
+                                            <td className="p-6 text-slate-500 dark:text-slate-400 font-black text-[10px] uppercase tracking-widest">
                                                 {formatDate(invoice.createdAt)}
                                             </td>
-                                            <td {...getGridCellProps(rowIndex, 1)} className="p-4 font-medium dark:text-white outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500">{invoice.invoiceNumber || '-'}</td>
-                                            <td {...getGridCellProps(rowIndex, 2)} className="p-4 text-slate-600 dark:text-slate-400 outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500">{invoice.customerName || 'Unknown'}</td>
-                                            <td {...getGridCellProps(rowIndex, 3)} className="p-4 font-medium dark:text-white outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500">{formatCurrency(invoice.grandTotal)}</td>
-                                            <td {...getGridCellProps(rowIndex, 4)} className="p-4 outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500">
-                                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${invoice.status === 'paid' || invoice.status === 'completed' ? 'bg-green-100 text-green-700' :
-                                                    invoice.status === 'pending' ? 'bg-amber-100 text-amber-700' :
-                                                        'bg-slate-100 text-slate-600'
-                                                    }`}>
-                                                    {invoice.status?.toUpperCase()}
+                                            <td className="p-6">
+                                                <span className="font-mono text-[10px] font-black bg-slate-100 dark:bg-slate-900 px-3 py-1 rounded-lg text-slate-400 group-hover:text-blue-500 transition-colors tracking-widest">#{invoice.invoiceNumber || '-'}</span>
+                                            </td>
+                                            <td className="p-6 text-slate-800 dark:text-white font-black text-sm uppercase tracking-tight">{invoice.customerName || 'Unknown'}</td>
+                                            <td className="p-6 font-black text-blue-600 dark:text-blue-400 text-lg tracking-tighter">{formatCurrency(invoice.grandTotal)}</td>
+                                            <td className="p-6">
+                                                <span className={`px-4 py-1.5 rounded-2xl text-[9px] font-black uppercase tracking-widest border
+                                                    ${invoice.status === 'paid' || invoice.status === 'completed' ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' :
+                                                        invoice.status === 'pending' ? 'bg-amber-500/10 text-amber-600 border-amber-500/20' :
+                                                            'bg-slate-500/10 text-slate-600 border-slate-500/20'}`}>
+                                                    {invoice.status}
                                                 </span>
                                             </td>
                                             {activeTab === 'return' && isZatcaEnabled && (
-                                                <td className="p-4">
+                                                <td className="p-6">
                                                     {invoice.zatcaStatus === 'REPORTED' ? (
-                                                        <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold bg-green-50 text-green-700 border border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-800">
+                                                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-2xl text-[9px] font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
                                                             <ShieldCheck size={12} /> Reported
                                                         </span>
                                                     ) : invoice.zatcaStatus === 'ERROR' ? (
                                                         <span 
-                                                            className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-800 cursor-help"
+                                                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-2xl text-[9px] font-black uppercase tracking-widest bg-rose-500/10 text-rose-600 border border-rose-500/20 cursor-help"
                                                             title={invoice.zatcaError || 'Validation Error'}
                                                         >
                                                             <ShieldAlert size={12} /> Error
                                                         </span>
                                                     ) : (
-                                                        <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-500 border border-slate-200 dark:bg-slate-700 dark:text-slate-400 dark:border-slate-600">
+                                                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-2xl text-[9px] font-black uppercase tracking-widest bg-slate-500/10 text-slate-600 border border-slate-500/20">
                                                             <Clock size={12} /> Pending
                                                         </span>
                                                     )}
                                                 </td>
                                             )}
-                                            <td {...getGridCellProps(rowIndex, 5)} className="p-4 text-right flex justify-end gap-2 outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20 focus:ring-inset focus:ring-2 focus:ring-blue-500 rounded-r-lg">
-                                                {activeTab === 'order' && invoice.status === 'pending' && (
-                                                    <button
-                                                        onClick={async () => {
-                                                            try {
-                                                                await db.transaction('rw', [db.invoices, db.items, db.customers], async () => {
-                                                                    // Generate sequential invoice number
-                                                                    const last = await db.invoices.orderBy('createdAt').last();
-                                                                    let nextNum = 1;
-                                                                    if (last && last.invoiceNumber) {
-                                                                        const numStr = last.invoiceNumber.replace(/\D/g, '');
-                                                                        const parsed = parseInt(numStr, 10);
-                                                                        if (!isNaN(parsed)) nextNum = parsed + 1;
-                                                                    }
-                                                                    const convInvNumber = `${settings.invoicePrefix || 'INV-'}${nextNum.toString().padStart(3, '0')}`;
-
-                                                                    // 1. Create New Invoice
-                                                                    const newInvoice: Invoice = {
-                                                                        ...invoice,
-                                                                        ...createRecordMetadata(),
-                                                                        branchId: activeBranchId || '',
-                                                                        invoiceNumber: convInvNumber,
-                                                                        type: 'invoice',
-                                                                        status: 'pending',
-                                                                        paymentStatus: 'pending',
-                                                                        createdAt: new Date(),
-                                                                        notes: `Converted from Order #${invoice.invoiceNumber}`
-                                                                    };
-                                                                    await db.invoices.add(newInvoice);
-
-                                                                    // 2. Mark Order as Completed
-                                                                    await db.invoices.update(invoice.id!, { status: 'completed' });
-
-                                                                    // 3. Deduct Stock
-                                                                    for (const item of invoice.items) {
-                                                                        const dbItem = await db.items.get(item.itemId);
-                                                                        if (dbItem) {
-                                                                            await db.items.update(item.itemId, {
-                                                                                stock: dbItem.stock - item.quantity
-                                                                            });
-                                                                        }
-                                                                    }
-
-                                                                    // 4. Update Customer Balance (Increase Debt)
-                                                                    if (invoice.customerId) {
-                                                                        const customer = await db.customers.get(invoice.customerId);
-                                                                        if (customer) {
-                                                                            await db.customers.update(invoice.customerId, {
-                                                                                balance: (customer.balance || 0) + invoice.remainingAmount
-                                                                            });
-                                                                        }
-                                                                    }
-                                                                });
-
-                                                                addToast(t('sales.converted'), 'success');
-                                                            } catch (e) {
-                                                                console.error(e);
-                                                                addToast(t('sales.conversion_failed'), 'error');
-                                                            }
-                                                        }}
-                                                        className="p-2 text-green-600 hover:bg-green-50 rounded-lg tooltip"
-                                                        title={t('sales.convert_invoice')}
-                                                    >
-                                                        <RotateCcw size={18} className="rotate-180" />
-                                                    </button>
-                                                )}
-                                                <button
+                                            <td className="p-6 text-right flex justify-end gap-2">
+                                                <motion.button
+                                                    whileHover={{ scale: 1.1 }}
+                                                    whileTap={{ scale: 0.9 }}
                                                     onClick={() => printInvoice(invoice)}
-                                                    className="p-2 text-slate-400 hover:text-slate-600"
+                                                    className="p-3 bg-slate-100 dark:bg-slate-800 text-slate-400 hover:text-blue-500 rounded-xl transition-colors"
                                                     title={t('common.print')}
                                                 >
-                                                    <Printer size={18} />
-                                                </button>
-                                                {settings.cafeMode && invoice.status === 'pending' && activeTab === 'order' && (
-                                                    <button
-                                                        onClick={() => navigate('/pos', { state: { editInvoice: invoice } })}
-                                                        className="p-2 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"
+                                                    <Printer size={18} strokeWidth={2.5} />
+                                                </motion.button>
+                                                {invoice.status === 'pending' && activeTab === 'order' && (
+                                                    <motion.button
+                                                        whileHover={{ scale: 1.1 }}
+                                                        whileTap={{ scale: 0.9 }}
+                                                        onClick={() => navigate('/pos', { state: { editInvoice: invoice, hidePayLater: true } })}
+                                                        className="p-3 bg-blue-600/10 text-blue-600 hover:bg-blue-600 hover:text-white rounded-xl transition-all"
                                                         title="Proceed to Payment"
                                                     >
-                                                        <CreditCard size={18} />
-                                                    </button>
+                                                        <CreditCard size={18} strokeWidth={2.5} />
+                                                    </motion.button>
                                                 )}
                                             </td>
                                         </tr>
@@ -543,67 +589,74 @@ const Sales = () => {
                 )}
 
                 {activeTab === 'payment' && (
-                    <div className="overflow-x-auto">
-                        <div className="p-4 flex justify-end">
-                            <button
+                    <div className="p-6">
+                        <div className="flex justify-end mb-8">
+                            <motion.button
+                                whileHover={{ scale: 1.02 }}
+                                whileTap={{ scale: 0.98 }}
                                 onClick={() => setIsPaymentModalOpen(true)}
-                                className="px-4 py-2 bg-green-600 text-white rounded-lg flex items-center gap-2 hover:bg-green-700"
+                                className="px-6 py-3 bg-emerald-600 text-white rounded-[1.5rem] flex items-center gap-2 font-black uppercase tracking-widest text-[10px] shadow-xl shadow-emerald-500/20"
                             >
-                                <Plus size={20} /> {t('sales.record_payment')}
-                            </button>
+                                <Plus size={20} strokeWidth={3} /> {t('sales.record_payment')}
+                            </motion.button>
                         </div>
-                        <table className="w-full text-left">
-                            <thead className="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700">
-                                <tr>
-                                    <th className="p-4 font-semibold text-slate-600 dark:text-slate-300">{t('sales.date')}</th>
-                                    <th className="p-4 font-semibold text-slate-600 dark:text-slate-300">{t('sales.customer')}</th>
-                                    <th className="p-4 font-semibold text-slate-600 dark:text-slate-300">{t('sales.amount')}</th>
-                                    <th className="p-4 font-semibold text-slate-600 dark:text-slate-300">{t('sales.method')}</th>
-                                    <th className="p-4 font-semibold text-slate-600 dark:text-slate-300">{t('sales.reference')}</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                                {!paymentList ? (
-                                    Array.from({ length: 5 }).map((_: any, i: any) => (
-                                        <tr key={i} className="animate-pulse">
-                                            <td className="p-4"><Skeleton width={80} height={20} /></td>
-                                            <td className="p-4"><Skeleton width={150} height={20} /></td>
-                                            <td className="p-4"><Skeleton width={80} height={20} /></td>
-                                            <td className="p-4"><Skeleton width={80} height={20} /></td>
-                                            <td className="p-4"><Skeleton width={100} height={20} /></td>
-                                        </tr>
-                                    ))
-                                ) : paymentList.length === 0 ? (
-                                    <tr>
-                                        <td colSpan={5}>
-                                            <EmptyState
-                                                title={t('sales.no_payments')}
-                                                description={t('sales.no_payments_desc') || "No payments recorded yet."}
-                                                icon={CreditCard}
-                                                actionLabel={t('sales.record_payment')}
-                                                onAction={() => setIsPaymentModalOpen(true)}
-                                            />
-                                        </td>
+                        <div className="overflow-x-auto rounded-[2rem] border border-slate-100 dark:border-slate-700/50">
+                            <table className="w-full text-left">
+                                <thead>
+                                    <tr className="bg-slate-50/50 dark:bg-slate-900/50">
+                                        <th className="p-6 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{t('sales.date')}</th>
+                                        <th className="p-6 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{t('sales.customer')}</th>
+                                        <th className="p-6 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{t('sales.amount')}</th>
+                                        <th className="p-6 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{t('sales.method')}</th>
+                                        <th className="p-6 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{t('sales.reference')}</th>
                                     </tr>
-                                ) : (
-                                    paymentList.map((payment: any) => {
-                                        const customer = customers?.find(c => c.id === payment.customerId);
-                                        return (
-                                            <tr key={payment.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                                                <td className="p-4 text-slate-600 dark:text-slate-400">{formatDate(payment.date)}</td>
-                                                <td className="p-4 font-medium dark:text-white">{customer?.name || 'Unknown'}</td>
-                                                <td className="p-4 font-medium text-green-600">+{formatCurrency(payment.amount)}</td>
-                                                <td className="p-4 text-slate-600 dark:text-slate-400 capitalize">{payment.paymentMode}</td>
-                                                <td className="p-4 text-slate-500 text-sm">{payment.reference || '-'}</td>
+                                </thead>
+                                <tbody className="divide-y divide-slate-50 dark:divide-slate-700/30">
+                                    {!paymentList ? (
+                                        Array.from({ length: 5 }).map((_: any, i: any) => (
+                                            <tr key={i} className="animate-pulse">
+                                                <td className="p-6"><Skeleton width={80} height={20} /></td>
+                                                <td className="p-6"><Skeleton width={150} height={20} /></td>
+                                                <td className="p-6"><Skeleton width={80} height={20} /></td>
+                                                <td className="p-6"><Skeleton width={80} height={20} /></td>
+                                                <td className="p-6"><Skeleton width={100} height={20} /></td>
                                             </tr>
-                                        );
-                                    })
-                                )}
-                            </tbody>
-                        </table>
+                                        ))
+                                    ) : paymentList.length === 0 ? (
+                                        <tr>
+                                            <td colSpan={5}>
+                                                <EmptyState
+                                                    title={t('sales.no_payments')}
+                                                    description={t('sales.no_payments_desc') || "No payments recorded yet."}
+                                                    icon={CreditCard}
+                                                    actionLabel={t('sales.record_payment')}
+                                                    onAction={() => setIsPaymentModalOpen(true)}
+                                                />
+                                            </td>
+                                        </tr>
+                                    ) : (
+                                        paymentList.map((payment: any) => {
+                                            const customer = customers?.find(c => c.id === payment.customerId);
+                                            return (
+                                                <tr key={payment.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-700/30 transition-all">
+                                                    <td className="p-6 text-slate-500 dark:text-slate-400 font-black text-[10px] uppercase tracking-widest">{formatDate(payment.date)}</td>
+                                                    <td className="p-6 font-black text-sm dark:text-white uppercase tracking-tight">{customer?.name || 'Unknown'}</td>
+                                                    <td className="p-6 font-black text-emerald-600 text-lg tracking-tighter">+{formatCurrency(payment.amount)}</td>
+                                                    <td className="p-6 capitalize">
+                                                        <span className="px-3 py-1 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-lg text-[9px] font-black uppercase tracking-widest">{payment.paymentMode}</span>
+                                                    </td>
+                                                    <td className="p-6 text-slate-500 text-[10px] font-mono tracking-widest">{payment.reference || '-'}</td>
+                                                </tr>
+                                            );
+                                        })
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 )}
-            </div>
+            </motion.div>
+
 
 
 
@@ -673,6 +726,10 @@ const Sales = () => {
                         </button>
                         <button
                             onClick={async () => {
+                                if (!canUpdate('customers')) {
+                                    addToast(t('common.access_denied'), 'error');
+                                    return;
+                                }
                                 if (!paymentCustomerId || !paymentAmount) {
                                     addToast(t('sales.select_cust_amount_error'), 'error');
                                     return;
@@ -683,7 +740,6 @@ const Sales = () => {
                                         // 1. Save Payment
                                         await db.customerPayments.add({
                                             ...createRecordMetadata(),
-                                            branchId: activeBranchId || '',
                                             customerId: paymentCustomerId,
                                             amount: amount,
                                             date: new Date(),
@@ -723,12 +779,12 @@ const Sales = () => {
                 isOpen={isModalOpen}
                 onClose={() => setIsModalOpen(false)}
                 title={activeTab === 'order' ? t('sales.new_order') : t('sales.new_return')}
-                maxWidth="5xl"
+                maxWidth="7xl"
                 className="h-[90vh]"
             >
-                <div className="flex-1 overflow-hidden flex h-full">
+                <div className="flex-1 overflow-hidden flex flex-col md:flex-row h-full">
                     {/* Left: Item Selector */}
-                    <div className="w-1/3 border-r border-slate-200 dark:border-slate-700 p-4 flex flex-col gap-4 bg-slate-50 dark:bg-slate-800/50">
+                    <div className="w-full md:w-[360px] border-b md:border-b-0 md:border-r border-slate-200 dark:border-slate-700 p-4 flex flex-col gap-4 bg-slate-50 dark:bg-slate-800/50 shrink-0 h-1/2 md:h-full overflow-hidden">
                         <h3 className="font-semibold text-slate-700 dark:text-slate-200">{t('sales.select_items')}</h3>
                         <div className="flex gap-2">
                             <div className="relative flex-1">
@@ -752,7 +808,7 @@ const Sales = () => {
                         <div
                             ref={scrollContainerRef}
                             onScroll={handleScroll}
-                            className="flex-1 overflow-y-auto space-y-2"
+                            className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar"
                         >
                             {visibleItems?.map((item: any) => (
                                 <button
@@ -760,9 +816,9 @@ const Sales = () => {
                                     onClick={() => addToOrder(item)}
                                     className="w-full text-left p-3 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-blue-500 transition-colors"
                                 >
-                                    <div className="flex justify-between">
-                                        <span className="font-medium dark:text-white">{item.name}</span>
-                                        <span className="text-xs bg-slate-100 dark:bg-slate-700 px-2 py-0.5 rounded text-slate-600 dark:text-slate-300">
+                                    <div className="flex justify-between items-start gap-2">
+                                        <span className="font-medium dark:text-white text-sm line-clamp-2 leading-tight flex-1">{item.name}</span>
+                                        <span className="text-xs bg-slate-100 dark:bg-slate-700 px-2 py-0.5 rounded text-slate-600 dark:text-slate-300 shrink-0">
                                             {t('sales.stock')}: {item.stock}
                                         </span>
                                     </div>
@@ -773,7 +829,7 @@ const Sales = () => {
                     </div>
 
                     {/* Right: Form & Details */}
-                    <div className="w-2/3 flex flex-col h-full">
+                    <div className="w-full md:flex-1 flex flex-col h-1/2 md:h-full">
                         <div className="flex-1 overflow-y-auto p-6 space-y-6">
                             {/* Customer & Date */}
                             <div className="grid grid-cols-2 gap-4">
@@ -919,6 +975,38 @@ const Sales = () => {
                             placeholder={t('sales.item_name_placeholder')}
                         />
                     </div>
+                    <div>
+                        <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-1.5">{t('inventory.product_image') || 'Product Image'}</label>
+                        <div className="flex gap-4 items-center">
+                            {newItemImage ? (
+                                <div className="relative w-20 h-20 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 shrink-0">
+                                    <img src={newItemImage} className="w-full h-full object-cover" alt="Preview" />
+                                    <button
+                                        type="button"
+                                        onClick={() => setNewItemImage('')}
+                                        className="absolute -top-1 -right-1 p-1 bg-red-500 hover:bg-red-600 text-white rounded-full shadow-lg transition-transform hover:scale-105"
+                                    >
+                                        <X size={10} />
+                                    </button>
+                                </div>
+                            ) : (
+                                <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl p-4 cursor-pointer hover:border-blue-500 transition-all bg-slate-50/50 dark:bg-slate-900/30 group">
+                                    <div className="flex items-center gap-2">
+                                        <Upload size={16} className="text-slate-400 group-hover:text-blue-500 transition-all" />
+                                        <span className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest">
+                                            Upload Image (Max 700KB)
+                                        </span>
+                                    </div>
+                                    <input
+                                        type="file"
+                                        accept="image/*"
+                                        onChange={handleNewItemImageChange}
+                                        className="hidden"
+                                    />
+                                </label>
+                            )}
+                        </div>
+                    </div>
                     <div className="grid grid-cols-2 gap-4">
                         <div>
                             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">{t('sales.purchase_cost')}</label>
@@ -954,13 +1042,20 @@ const Sales = () => {
 
                     <div className="flex justify-end gap-3 pt-4">
                         <button
-                            onClick={() => setIsAddItemOpen(false)}
+                            onClick={() => {
+                                setIsAddItemOpen(false);
+                                setNewItemImage('');
+                            }}
                             className="px-4 py-2 text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-700 rounded-lg"
                         >
                             {t('common.cancel')}
                         </button>
                         <button
                             onClick={async () => {
+                                if (!canCreate('inventory')) {
+                                    addToast(t('common.access_denied'), 'error');
+                                    return;
+                                }
                                 if (!newItemName.trim() || !newItemPrice) {
                                     addToast(t('sales.name_price_required'), 'error');
                                     return;
@@ -973,7 +1068,6 @@ const Sales = () => {
                                     const meta = createRecordMetadata();
                                     const id = await db.items.add({
                                         ...meta,
-                                        branchId: activeBranchId || '',
                                         name: newItemName,
                                         purchasePrice: cost,
                                         salePrice: price,
@@ -981,13 +1075,13 @@ const Sales = () => {
                                         minStock: 5,
                                         taxType: 'exclusive',
                                         taxRate: 0,
-                                        barcode: ''
+                                        barcode: '',
+                                        image: newItemImage
                                     });
 
                                     // Add to current order list directly
                                     addToOrder({
                                         ...meta,
-                                        branchId: activeBranchId || '',
                                         id: id as string,
                                         name: newItemName,
                                         purchasePrice: cost,
@@ -996,7 +1090,8 @@ const Sales = () => {
                                         minStock: 5,
                                         taxType: 'exclusive',
                                         taxRate: 0,
-                                        barcode: ''
+                                        barcode: '',
+                                        image: newItemImage
                                     });
 
                                     setIsAddItemOpen(false);
@@ -1005,8 +1100,7 @@ const Sales = () => {
                                     setNewItemCost('');
                                     setNewItemPrice('');
                                     setNewItemStock('');
-
-                                    setNewItemStock('');
+                                    setNewItemImage('');
 
                                     addToast(t('sales.item_created'), 'success');
                                 } catch (error) {
@@ -1021,7 +1115,7 @@ const Sales = () => {
                     </div>
                 </div>
             </Modal>
-        </div>
+        </motion.div>
     );
 };
 

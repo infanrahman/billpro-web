@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { db } from '../../services/db';
+import { db, matchesActiveScope } from '../../services/db';
 import { startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear } from 'date-fns';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -19,7 +19,7 @@ export interface BillProfitRow {
 }
 
 export const useBillProfitData = (range: DateRange, customStartStr?: string, customEndStr?: string) => {
-    const { activeBranchId, activeBranch } = useAuth();
+    const { activeCompanyId, activeBranchId, activeBranch } = useAuth();
     const [data, setData] = useState<BillProfitRow[]>([]);
     const [loading, setLoading] = useState(true);
     const [totals, setTotals] = useState({
@@ -81,8 +81,7 @@ export const useBillProfitData = (range: DateRange, customStartStr?: string, cus
 
             try {
                 // Fetch Items to get COGS
-                const allItemsQuery = activeBranch?.isMaster ? db.items : db.items.where('branchId').equals(activeBranchId);
-                const allItems = await (allItemsQuery as any).filter((i: any) => !i.deletedAt).toArray();
+                const allItems = await db.items.filter((i: any) => matchesActiveScope(i, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !i.deletedAt).toArray();
                 const itemCostMap = new Map<string, number>();
                 allItems.forEach((item: any) => {
                     if (item.id) itemCostMap.set(item.id, item.purchasePrice || 0);
@@ -92,7 +91,7 @@ export const useBillProfitData = (range: DateRange, customStartStr?: string, cus
                 const invoices = await db.invoices
                     .where('createdAt')
                     .between(start, end, true, true)
-                    .and((inv: any) => (activeBranch?.isMaster || inv.branchId === activeBranchId) && !inv.deletedAt)
+                    .and((inv: any) => matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !inv.deletedAt)
                     .toArray();
 
                 const validInvoices = invoices.filter((inv: any) => inv.status !== 'cancelled' && inv.status !== 'draft');
@@ -116,7 +115,8 @@ export const useBillProfitData = (range: DateRange, customStartStr?: string, cus
                     });
 
                     // Net Sales = GrandTotal - TaxAmount (Always accurate regardless of inclusive/exclusive)
-                    const netSales = (inv.grandTotal - (inv.taxAmount || 0));
+                    // Priority: 1. Stored netAmount 2. Calculated fallback
+                    const netSales = inv.netAmount !== undefined ? inv.netAmount : (inv.grandTotal - (inv.taxAmount || 0));
 
                     const profit = (netSales - invoiceCost) * multiplier;
                     const finalNetSales = netSales * multiplier;
@@ -157,7 +157,7 @@ export const useBillProfitData = (range: DateRange, customStartStr?: string, cus
         };
 
         fetchData();
-    }, [range, customStartStr, customEndStr, activeBranchId, activeBranch?.isMaster]);
+    }, [range, customStartStr, customEndStr, activeCompanyId, activeBranchId, activeBranch?.isMaster]);
 
     return { data, loading, totals };
 };

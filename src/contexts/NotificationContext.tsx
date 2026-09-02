@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { db, type Notification, createRecordMetadata } from '../services/db';
+import { db, type Notification, createRecordMetadata, matchesActiveScope } from '../services/db';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { useAuth } from './AuthContext';
 
 interface Toast {
     id: number;
@@ -23,11 +24,18 @@ const NotificationContext = createContext<NotificationContextType | undefined>(u
 
 export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [toasts, setToasts] = useState<Toast[]>([]);
+    const { activeCompanyId, activeBranchId, activeBranch } = useAuth();
 
     // Live query for persistent notifications
     const notifications = useLiveQuery(
-        () => db.notifications.orderBy('date').reverse().limit(50).toArray()
-        , []) || [];
+        async () => {
+            const rows = await db.notifications
+                .filter(notification => matchesActiveScope(notification, activeCompanyId, activeBranchId, activeBranch?.isMaster))
+                .toArray();
+            return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 50);
+        },
+        [activeCompanyId, activeBranchId, activeBranch?.isMaster]
+    ) || [];
 
     const unreadCount = notifications.filter(n => !n.read).length;
 
@@ -76,13 +84,13 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
                 .filter(inv => {
                     const isUnpaid = inv.paymentStatus === 'pending' || inv.paymentStatus === 'partial' || inv.paymentStatus === 'overdue';
                     const hasBalance = (inv.remainingAmount ?? 0) > 0.1 || (inv.grandTotal - (inv.paidAmount ?? 0)) > 0.1;
-                    return isUnpaid && hasBalance && inv.dueDate !== undefined && inv.dueDate < today;
+                    return matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster) && isUnpaid && hasBalance && inv.dueDate !== undefined && inv.dueDate < today;
                 })
                 .toArray();
 
             for (const inv of overdueInvoices) {
                 const exists = await db.notifications
-                    .filter(n => n.referenceId === inv.id && n.type === 'warning' && !n.read)
+                    .filter(n => matchesActiveScope(n, activeCompanyId, activeBranchId, activeBranch?.isMaster) && n.referenceId === inv.id && n.type === 'warning' && !n.read)
                     .first();
 
                 if (!exists) {
@@ -98,13 +106,13 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         // 2. Low Stock Reminders
         if (settings.lowStock) {
             const lowStockItems = await db.items
-                .filter(item => item.stock <= (item.minStock || 0))
+                .filter(item => matchesActiveScope(item, activeCompanyId, activeBranchId, activeBranch?.isMaster) && item.stock <= (item.minStock || 0))
                 .toArray();
 
             for (const item of lowStockItems) {
                 const exists = await db.notifications
                     .where({ referenceId: item.id, type: 'warning' }) // Use referenceId
-                    .filter(n => !n.read && n.message.includes('Low stock'))
+                    .filter(n => matchesActiveScope(n, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !n.read && n.message.includes('Low stock'))
                     .first();
 
                 if (!exists) {
@@ -122,7 +130,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
             const overduePurchases = await db.purchases
                 .filter(p => {
                     const balance = p.totalAmount - (p.paidAmount || 0);
-                    return balance > 0.1 && !!p.dueDate && p.dueDate < today;
+                    return matchesActiveScope(p, activeCompanyId, activeBranchId, activeBranch?.isMaster) && balance > 0.1 && !!p.dueDate && p.dueDate < today;
                 })
                 .toArray();
 
@@ -132,7 +140,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
                 const existsId = await db.notifications
                     .where({ referenceId: relId, type: 'error' })
-                    .filter(n => !n.read && n.message.includes('Overdue Purchase'))
+                    .filter(n => matchesActiveScope(n, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !n.read && n.message.includes('Overdue Purchase'))
                     .first();
 
                 if (!existsId) {
@@ -144,7 +152,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
                 }
             }
         }
-    }, [addNotification]);
+    }, [activeCompanyId, activeBranchId, activeBranch?.isMaster, addNotification]);
 
     // Initial check on mount
     useEffect(() => {

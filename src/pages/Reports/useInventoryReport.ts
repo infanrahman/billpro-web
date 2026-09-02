@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { db } from '../../services/db';
+import { db, matchesActiveScope } from '../../services/db';
 import { startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear } from 'date-fns';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -29,7 +29,7 @@ export interface InventoryRow {
 }
 
 export const useInventoryReport = (mode: ReportMode, range: DateRange, customStartStr?: string, customEndStr?: string) => {
-    const { activeBranchId, activeBranch } = useAuth();
+    const { activeCompanyId, activeBranchId, activeBranch } = useAuth();
     const [data, setData] = useState<InventoryRow[]>([]);
     const [loading, setLoading] = useState(true);
     const [totals, setTotals] = useState({
@@ -46,8 +46,9 @@ export const useInventoryReport = (mode: ReportMode, range: DateRange, customSta
             setLoading(true);
             try {
                 // 1. Fetch Items
-                const allItemsQuery = activeBranch?.isMaster ? db.items : db.items.where('branchId').equals(activeBranchId);
-                const allItems = await (allItemsQuery as any).filter((i: any) => !i.deletedAt).toArray();
+                const allItems = await db.items
+                    .filter((i: any) => matchesActiveScope(i, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !i.deletedAt)
+                    .toArray();
 
                 const baseRows: InventoryRow[] = allItems.map((item: any) => ({
                     id: item.id!,
@@ -89,12 +90,12 @@ export const useInventoryReport = (mode: ReportMode, range: DateRange, customSta
                     const invoices = await db.invoices
                         .where('createdAt')
                         .between(start, new Date(), true, true)
-                        .and((inv: any) => (activeBranch?.isMaster || inv.branchId === activeBranchId) && inv.status !== 'cancelled' && inv.status !== 'draft' && !inv.deletedAt)
+                        .and((inv: any) => matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster) && inv.status !== 'cancelled' && inv.status !== 'draft' && !inv.deletedAt)
                         .toArray();
                     const purchases = await db.purchases
                         .where('date')
                         .between(start, new Date(), true, true)
-                        .and((pur: any) => (activeBranch?.isMaster || pur.branchId === activeBranchId) && pur.status !== 'cancelled' && !pur.deletedAt)
+                        .and((pur: any) => matchesActiveScope(pur, activeCompanyId, activeBranchId, activeBranch?.isMaster) && pur.status !== 'cancelled' && !pur.deletedAt)
                         .toArray();
 
                     const postPeriodDelta = new Map<string, number>();
@@ -157,7 +158,7 @@ export const useInventoryReport = (mode: ReportMode, range: DateRange, customSta
         };
 
         fetchData();
-    }, [mode, range, customStartStr, customEndStr, activeBranchId, activeBranch?.isMaster]);
+    }, [mode, range, customStartStr, customEndStr, activeCompanyId, activeBranchId, activeBranch?.isMaster]);
 
     return { data, loading, totals };
 };

@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { db, type Expense, softDeleteMetadata } from '../../services/db';
+import { db, matchesActiveScope, type Expense, softDeleteMetadata } from '../../services/db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { Plus, Trash, DollarSign, Edit, Search, Filter } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -15,9 +15,9 @@ const Expenses: React.FC = () => {
     const { t } = useTranslation();
     const { formatCurrency, formatDate } = useSettings();
     const { addToast } = useNotification();
-    const { hasPermission, isAdmin, activeBranchId, activeBranch } = useAuth();
+    const { canView, canCreate, canUpdate, canDelete, activeCompanyId, activeBranchId, activeBranch } = useAuth();
 
-    if (!hasPermission('expenses_view')) {
+    if (!canView('expenses')) {
         return (
             <div className="flex flex-col items-center justify-center h-screen text-center p-8">
                 <ShieldOff size={48} className="text-slate-300 mb-4" />
@@ -33,10 +33,11 @@ const Expenses: React.FC = () => {
     const [categoryFilter, setCategoryFilter] = useState('All');
 
     const expenses = useLiveQuery(async () => {
-        const baseQuery = activeBranch?.isMaster ? db.expenses.reverse() : db.expenses.where('branchId').equals(activeBranchId).reverse();
-        const data = await baseQuery.sortBy('date');
-        return data.filter((e: any) => !e.deletedAt);
-    }, [activeBranchId, activeBranch?.isMaster]);
+        const data = await db.expenses
+            .filter((expense) => matchesActiveScope(expense, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !expense.deletedAt)
+            .toArray();
+        return data.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    }, [activeCompanyId, activeBranchId, activeBranch?.isMaster]);
 
     const filteredExpenses = useMemo(() => {
         if (!expenses) return [];
@@ -51,16 +52,23 @@ const Expenses: React.FC = () => {
         try {
             const { createRecordMetadata, updateRecordMetadata } = await import('../../services/db');
             if (editingExpense && editingExpense.id) {
+                if (!canUpdate('expenses')) {
+                    addToast(t('common.access_denied'), 'error');
+                    return;
+                }
                 await db.expenses.update(editingExpense.id, {
                     ...data,
                     ...updateRecordMetadata()
                 });
                 addToast(t('inventory.update_success'), 'success'); // Using generic success message
             } else {
+                if (!canCreate('expenses')) {
+                    addToast(t('common.access_denied'), 'error');
+                    return;
+                }
                 await db.expenses.add({
                     ...createRecordMetadata(),
                     ...data,
-                    branchId: activeBranchId || '',
                     date: new Date()
                 });
                 addToast(t('inventory.save_success'), 'success');
@@ -78,6 +86,11 @@ const Expenses: React.FC = () => {
     };
 
     const handleConfirmDelete = async () => {
+        if (!canDelete('expenses')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         if (expenseToDelete) {
             await db.expenses.update(expenseToDelete, softDeleteMetadata());
             setExpenseToDelete(null);
@@ -106,7 +119,7 @@ const Expenses: React.FC = () => {
                     <h1 className="text-2xl font-bold dark:text-white">{t('expenses.title')}</h1>
                     <p className="text-slate-500 dark:text-slate-400 text-sm">Track and manage your business expenditures</p>
                 </div>
-                {hasPermission('expenses_add') && (
+                {canCreate('expenses') && (
                     <button
                         onClick={openAddModal}
                         className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-lg shadow-blue-500/30 transition-all active:scale-95"
@@ -190,7 +203,7 @@ const Expenses: React.FC = () => {
                                     <td className="p-4 font-bold text-slate-800 dark:text-white text-sm">{formatCurrency(exp.amount)}</td>
                                     <td className="p-4">
                                         <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity focus-within:opacity-100">
-                                            {hasPermission('expenses_edit') && (
+                                            {canUpdate('expenses') && (
                                                 <button
                                                     onClick={() => openEditModal(exp)}
                                                     className="p-2 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition-colors"
@@ -199,7 +212,7 @@ const Expenses: React.FC = () => {
                                                     <Edit size={18} />
                                                 </button>
                                             )}
-                                            {(isAdmin || hasPermission('expenses_delete')) && (
+                                            {canDelete('expenses') && (
                                                 <button
                                                     onClick={() => handleDeleteClick(exp.id!)}
                                                     className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"

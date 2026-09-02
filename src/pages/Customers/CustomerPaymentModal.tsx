@@ -7,6 +7,7 @@ import { db, createRecordMetadata, updateRecordMetadata } from '../../services/d
 import type { Customer } from '../../services/db';
 import { useTranslation } from 'react-i18next';
 import { printPaymentReceipt } from '../../services/invoiceGenerator';
+import { useAuth } from '../../contexts/AuthContext';
 
 interface CustomerPaymentModalProps {
     customer: Customer;
@@ -22,8 +23,14 @@ const CustomerPaymentModal: React.FC<CustomerPaymentModalProps> = ({ customer, o
     const [paymentMode, setPaymentMode] = useState<'cash' | 'card' | 'upi'>('cash');
     const [printReceipt, setPrintReceipt] = useState(true);
     const { addToast } = useNotification();
+    const { canUpdate } = useAuth();
 
     const handlePayment = async () => {
+        if (!canUpdate('customers')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         const payAmount = parseFloat(amount);
         if (!payAmount || payAmount <= 0) {
             addToast(t('customers.invalid_amount'), 'error');
@@ -34,6 +41,8 @@ const CustomerPaymentModal: React.FC<CustomerPaymentModalProps> = ({ customer, o
             // 1. Record Payment
             const paymentId = await db.customerPayments.add({
                 ...createRecordMetadata(),
+                companyId: customer.companyId,
+                branchId: customer.branchId,
                 customerId: customer.id!,
                 amount: payAmount,
                 date: new Date(),

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Modal from '../UI/Modal';
-import { db, type Invoice, type InvoiceItem } from '../../services/db';
+import { db, matchesActiveScope, type Invoice, type InvoiceItem } from '../../services/db';
 import { useNotification } from '../../contexts/NotificationContext';
 import { generateInvoicePDF } from '../../services/invoiceGenerator';
 import { Zap } from 'lucide-react';
@@ -21,7 +21,7 @@ const QuickPaymentModal: React.FC<QuickPaymentModalProps> = ({ isOpen, onClose }
     const { addToast } = useNotification();
     const { settings, formatCurrency } = useSettings();
     const { registerShortcut, unregisterShortcut } = useKeyboard();
-    const { activeBranchId } = useAuth();
+    const { canCreate, activeCompanyId, activeBranchId, activeBranch } = useAuth();
     const [isLoading, setIsLoading] = useState(false);
 
     // State
@@ -95,7 +95,11 @@ const QuickPaymentModal: React.FC<QuickPaymentModalProps> = ({ isOpen, onClose }
     const handleBarcodeScan = async (code: string) => {
         try {
             // 1. Search DB
-            const item = await db.items.where('barcode').equals(code).first();
+            const item = await db.items
+                .where('barcode')
+                .equals(code)
+                .and(candidate => matchesActiveScope(candidate, activeCompanyId, activeBranchId, activeBranch?.isMaster) && !candidate.deletedAt)
+                .first();
 
             if (item) {
                 // 2. Check if already in list
@@ -252,6 +256,11 @@ const QuickPaymentModal: React.FC<QuickPaymentModalProps> = ({ isOpen, onClose }
 
     // Split logic for reuse
     const processPayment = async (currentItems: QuickPayItem[]) => {
+        if (!canCreate('sales')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         setIsLoading(true);
 
         try {
@@ -294,7 +303,6 @@ const QuickPaymentModal: React.FC<QuickPaymentModalProps> = ({ isOpen, onClose }
             
             const invoice = {
                 ...createRecordMetadata(),
-                branchId: activeBranchId,
                 invoiceNumber: `QP-${Date.now().toString().slice(-6)}`,
                 customerName: 'Quick Sale',
                 items: invoiceItems,
@@ -307,7 +315,9 @@ const QuickPaymentModal: React.FC<QuickPaymentModalProps> = ({ isOpen, onClose }
                 paymentMode: paymentMode as any,
                 paymentStatus: 'paid',
                 status: 'paid',
-                type: 'invoice'
+                type: 'invoice',
+                createdAt: new Date(),
+                taxRate: currentTaxRate
             } as Invoice;
 
             const id = await db.invoices.add(invoice);

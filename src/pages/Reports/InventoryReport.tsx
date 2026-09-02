@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useInventoryReport, type ReportMode, type DateRange } from './useInventoryReport';
-import { PieChart, Calendar, ArrowLeftRight, Printer } from 'lucide-react';
+import { PieChart, Calendar, ArrowLeftRight, Printer, Sparkles, ArrowRight, Download, FileText } from 'lucide-react';
 import { useSettings } from '../../contexts/SettingsContext';
 import StockSummary from './StockSummary';
 import ItemPerformance from './ItemPerformance';
 import { printContent } from '../../services/printerService';
 import { generateGenericReportHTML } from '../../services/reportHTMLGenerator';
+import { motion, AnimatePresence } from 'framer-motion';
+import clsx from 'clsx';
 
 const InventoryReport: React.FC = () => {
     const { t } = useTranslation();
@@ -19,20 +21,6 @@ const InventoryReport: React.FC = () => {
     const activeRange = (startDate && endDate) ? 'custom' : range;
 
     const { data, loading, totals } = useInventoryReport(mode, activeRange, startDate, endDate);
-
-    // Ranges are only needed for Performance mode
-    const ranges: { id: DateRange; label: string }[] = [
-        { id: 'today', label: t('reports.period_daily') },
-        { id: 'week', label: t('reports.period_weekly') },
-        { id: 'month', label: t('reports.period_monthly') },
-        { id: 'year', label: t('reports.period_yearly') },
-    ];
-
-    const handleRangeChange = (r: DateRange) => {
-        setRange(r);
-        setStartDate('');
-        setEndDate('');
-    };
 
     const handlePrint = async () => {
         const businessDetails = JSON.parse(localStorage.getItem('businessDetails') || '{}');
@@ -84,84 +72,107 @@ const InventoryReport: React.FC = () => {
     };
 
     return (
-        <div className="space-y-6">
-            {/* Header / Sub-Tabs */}
-            <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
-                <div className="flex gap-2 bg-slate-100 dark:bg-slate-700 p-1 rounded-lg">
-                    <button
-                        onClick={() => setMode('summary')}
-                        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${mode === 'summary'
-                            ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-sm'
-                            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
-                            }`}
-                    >
-                        <PieChart size={16} />
-                        {t('reports.stock_summary')}
-                    </button>
-                    <button
-                        onClick={() => setMode('performance')}
-                        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${mode === 'performance'
-                            ? 'bg-white dark:bg-slate-600 text-purple-600 dark:text-purple-400 shadow-sm'
-                            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
-                            }`}
-                    >
-                        <ArrowLeftRight size={16} />
-                        {t('reports.item_performance')}
-                    </button>
-                </div>
-
-                {/* Date Filter (Only for Performance) */}
-                {mode === 'performance' && (
-                    <div className="flex flex-col md:flex-row gap-3 animate-in fade-in">
-                        <div className="bg-slate-100 dark:bg-slate-700 p-1 rounded-lg flex">
-                            {ranges.map((r: any) => (
-                                <button
-                                    key={r.id}
-                                    onClick={() => handleRangeChange(r.id)}
-                                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${range === r.id && !startDate
-                                        ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-sm'
-                                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
-                                        }`}
-                                >
-                                    {r.label}
-                                </button>
-                            ))}
+        <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+            {/* Premium Header Controls */}
+            <div className="bg-white/40 dark:bg-slate-800/20 backdrop-blur-2xl p-8 rounded-[3rem] shadow-2xl border border-white/50 dark:border-slate-700/30 relative overflow-hidden group">
+                <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/5 blur-3xl -mr-32 -mt-32 pointer-events-none" />
+                
+                <div className="flex flex-col xl:flex-row justify-between xl:items-center gap-8 relative z-10">
+                    <div className="flex flex-col md:flex-row items-center gap-6">
+                        <div className="flex gap-2 bg-slate-100/50 dark:bg-slate-900/50 p-1.5 rounded-[1.5rem] border border-slate-200/50 dark:border-slate-800/50 shadow-inner">
+                            <button
+                                onClick={() => setMode('summary')}
+                                className={clsx(
+                                    "flex items-center gap-3 px-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all",
+                                    mode === 'summary'
+                                        ? 'bg-white dark:bg-blue-600 text-slate-900 dark:text-white shadow-xl'
+                                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-white'
+                                )}
+                            >
+                                <PieChart size={18} />
+                                {t('reports.stock_summary')}
+                            </button>
+                            <button
+                                onClick={() => setMode('performance')}
+                                className={clsx(
+                                    "flex items-center gap-3 px-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all",
+                                    mode === 'performance'
+                                        ? 'bg-white dark:bg-blue-600 text-slate-900 dark:text-white shadow-xl'
+                                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-white'
+                                )}
+                            >
+                                <ArrowLeftRight size={18} />
+                                {t('reports.item_performance')}
+                            </button>
                         </div>
 
-                        <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-700 p-1 rounded-lg px-2">
-                            <Calendar size={16} className="text-slate-400" />
-                            <input
-                                type="datetime-local"
-                                value={startDate}
-                                onChange={(e) => { setStartDate(e.target.value); setRange('custom'); }}
-                                className="bg-transparent border-0 p-0 text-sm w-40 focus:ring-0 text-slate-700 dark:text-slate-300 dark:[color-scheme:dark]"
-                            />
-                            <span className="text-slate-400">-</span>
-                            <input
-                                type="datetime-local"
-                                value={endDate}
-                                onChange={(e) => { setEndDate(e.target.value); setRange('custom'); }}
-                                className="bg-transparent border-0 p-0 text-sm w-40 focus:ring-0 text-slate-700 dark:text-slate-300 dark:[color-scheme:dark]"
-                            />
-                        </div>
+                        {mode === 'performance' && (
+                            <div className="flex flex-wrap items-center gap-3 animate-in fade-in zoom-in duration-300">
+                                <div className="flex bg-slate-100/50 dark:bg-slate-900/50 p-1 rounded-xl border border-slate-200/50 dark:border-slate-800 shadow-inner">
+                                    {(['today', 'week', 'month', 'year'] as DateRange[]).map((r: any) => (
+                                        <button
+                                            key={r}
+                                            onClick={() => { setRange(r); setStartDate(''); setEndDate(''); }}
+                                            className={clsx(
+                                                "px-4 py-2 text-[9px] font-black uppercase tracking-widest rounded-lg transition-all",
+                                                range === r && !startDate
+                                                    ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-white shadow-md'
+                                                    : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'
+                                            )}
+                                        >
+                                            {t(`reports.range_${r}`)}
+                                        </button>
+                                    ))}
+                                </div>
+
+                                <div className="flex items-center gap-4 bg-white/50 dark:bg-slate-900/50 rounded-xl p-2 px-4 border border-slate-200/50 dark:border-slate-800 shadow-xl">
+                                    <Calendar size={16} className="text-blue-500 shrink-0" />
+                                    <div className="flex items-center gap-3">
+                                        <input
+                                            type="datetime-local"
+                                            value={startDate}
+                                            onChange={(e) => { setStartDate(e.target.value); setRange('custom'); }}
+                                            className="bg-transparent border-0 p-0 text-[10px] font-black uppercase tracking-tighter w-[130px] focus:ring-0 text-slate-700 dark:text-slate-300 dark:[color-scheme:dark]"
+                                        />
+                                        <ArrowRight size={12} className="text-slate-300" />
+                                        <input
+                                            type="datetime-local"
+                                            value={endDate}
+                                            onChange={(e) => { setEndDate(e.target.value); setRange('custom'); }}
+                                            className="bg-transparent border-0 p-0 text-[10px] font-black uppercase tracking-tighter w-[130px] focus:ring-0 text-slate-700 dark:text-slate-300 dark:[color-scheme:dark]"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
-                )}
 
-                <div className="flex gap-2">
-                    <button
-                        onClick={handlePrint}
-                        className="p-2 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors border border-transparent hover:border-blue-200"
-                        title="Print"
-                    >
-                        <Printer size={20} />
-                    </button>
+                    <div className="flex gap-2">
+                        <motion.button 
+                            whileHover={{ scale: 1.1 }} 
+                            whileTap={{ scale: 0.9 }} 
+                            onClick={handlePrint} 
+                            className="p-4 bg-white/50 dark:bg-slate-800/50 text-blue-500 rounded-2xl border border-white dark:border-slate-700 shadow-xl"
+                        >
+                            <Printer size={20} />
+                        </motion.button>
+                    </div>
                 </div>
             </div>
 
-            {/* Content */}
-            {mode === 'summary' && <StockSummary data={data} loading={loading} totals={totals} />}
-            {mode === 'performance' && <ItemPerformance data={data} loading={loading} totals={totals} />}
-
+            {/* Content Area */}
+            <AnimatePresence mode="wait">
+                <motion.div
+                    key={mode}
+                    initial={{ opacity: 0, scale: 0.98 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.98 }}
+                    transition={{ duration: 0.4, ease: "easeOut" }}
+                >
+                    {mode === 'summary' && <StockSummary data={data} loading={loading} totals={totals} />}
+                    {mode === 'performance' && <ItemPerformance data={data} loading={loading} totals={totals} />}
+                </motion.div>
+            </AnimatePresence>
         </div >
     );
 };

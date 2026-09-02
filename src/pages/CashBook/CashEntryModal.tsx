@@ -4,6 +4,7 @@ import { db, type CashEntry, createRecordMetadata, updateRecordMetadata } from '
 import { useTranslation } from 'react-i18next';
 import { useNotification } from '../../contexts/NotificationContext';
 import { format } from 'date-fns';
+import { useAuth } from '../../contexts/AuthContext';
 
 interface CashEntryModalProps {
     isOpen: boolean;
@@ -17,6 +18,7 @@ interface CashEntryModalProps {
 const CashEntryModal: React.FC<CashEntryModalProps> = ({ isOpen, onClose, onSave, type, partyId, editEntry }) => {
     const { t } = useTranslation();
     const { addToast } = useNotification();
+    const { canCreate, canUpdate } = useAuth();
     const [amount, setAmount] = useState('');
     const [description, setDescription] = useState('');
     const [category, setCategory] = useState('');
@@ -54,6 +56,10 @@ const CashEntryModal: React.FC<CashEntryModalProps> = ({ isOpen, onClose, onSave
             const entryDate = new Date(`${date}T${time}`);
 
             if (editEntry && editEntry.id) {
+                if (!canUpdate('cashbook')) {
+                    addToast(t('common.access_denied'), 'error');
+                    return;
+                }
                 await db.cashEntries.update(editEntry.id, {
                     ...updateRecordMetadata(),
                     amount: parseFloat(amount),
@@ -63,6 +69,10 @@ const CashEntryModal: React.FC<CashEntryModalProps> = ({ isOpen, onClose, onSave
                 });
                 addToast(t('cashbook.entry_updated'), 'success');
             } else {
+                if (!canCreate('cashbook')) {
+                    addToast(t('common.access_denied'), 'error');
+                    return;
+                }
                 const entry: CashEntry = {
                     ...createRecordMetadata(),
                     type,

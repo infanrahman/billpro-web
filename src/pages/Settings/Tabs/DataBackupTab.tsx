@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
-import { Download, Upload, Database, AlertTriangle, CheckCircle, Clock, Folder } from 'lucide-react';
+import { Download, Upload, Database, AlertTriangle, CheckCircle, Clock, Folder, Play, Cloud, RefreshCw, Save } from 'lucide-react';
 import { generateBackupData, restoreBackupData } from '../../../services/backupService';
+import { getWebTrackingConfig, pushWebTrackingChanges, saveWebTrackingConfig } from '../../../services/webTrackingSyncService';
 import { useNotification } from '../../../contexts/NotificationContext';
 import { useTranslation } from 'react-i18next';
 import ConfirmationModal from '../../../components/UI/ConfirmationModal';
@@ -10,7 +11,7 @@ import { useAuth } from '../../../contexts/AuthContext';
 const DataBackupTab: React.FC = () => {
     const { addToast } = useNotification();
     const { t } = useTranslation();
-    const { isAdmin } = useAuth();
+    const { can, isAdmin } = useAuth();
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [loading, setLoading] = useState(false);
     const [isResetModalOpen, setIsResetModalOpen] = useState(false);
@@ -20,44 +21,129 @@ const DataBackupTab: React.FC = () => {
     // Auto Backup State
     const [autoBackupEnabled, setAutoBackupEnabled] = useState(localStorage.getItem('autoBackupEnabled') === 'true');
     const [autoBackupPath, setAutoBackupPath] = useState(localStorage.getItem('autoBackupPath') || '');
+    // Fix #15: read last backup time for display
+    const [lastBackupTime, setLastBackupTime] = useState<number | null>(() => {
+        const raw = localStorage.getItem('lastAutoBackupTime');
+        return raw ? parseInt(raw) : null;
+    });
+    const [autoBackupLoading, setAutoBackupLoading] = useState(false);
+    const [webTrackingEndpoint, setWebTrackingEndpoint] = useState(() => getWebTrackingConfig().endpoint);
+    const [webTrackingToken, setWebTrackingToken] = useState(() => getWebTrackingConfig().token);
+    const [webTrackingAutoSync, setWebTrackingAutoSync] = useState(() => getWebTrackingConfig().autoSyncEnabled);
+    const [lastWebTrackingSync, setLastWebTrackingSync] = useState<string | null>(() => getWebTrackingConfig().lastSyncAt);
+    const [webTrackingLoading, setWebTrackingLoading] = useState(false);
 
-    const handleToggleAutoBackup = () => {
+    // Fix #9: Only enable auto-backup after a folder is successfully confirmed.
+    // If the user cancels the folder picker, the toggle reverts to off.
+    const handleToggleAutoBackup = async () => {
         const newState = !autoBackupEnabled;
+        if (newState && !autoBackupPath) {
+            // Must pick a folder first before enabling
+            const chosen = await pickBackupFolder();
+            if (!chosen) return; // user cancelled — do NOT enable
+        }
         setAutoBackupEnabled(newState);
         localStorage.setItem('autoBackupEnabled', String(newState));
-        if (newState && !autoBackupPath) {
-            handleSelectBackupFolder();
-        }
     };
 
-    const handleSelectBackupFolder = async () => {
+    // Shared folder-picker logic — returns chosen path or null
+    const pickBackupFolder = async (): Promise<string | null> => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const electron = (window as any).electron;
         if (electron && electron.selectBackupFolder) {
-            const path = await electron.selectBackupFolder();
-            if (path) {
-                setAutoBackupPath(path);
-                localStorage.setItem('autoBackupPath', path);
+            const chosen = await electron.selectBackupFolder();
+            if (chosen) {
+                setAutoBackupPath(chosen);
+                localStorage.setItem('autoBackupPath', chosen);
+                // Fix #12: reset last backup time so backup fires immediately for the new folder
+                localStorage.removeItem('lastAutoBackupTime');
+                setLastBackupTime(null);
+                return chosen;
             }
+            return null;
         } else {
             console.warn('Electron API not available');
+            return null;
         }
     };
 
+    const handleSelectBackupFolder = () => pickBackupFolder();
+
+    // Fix #16: "Backup Now" — runs immediately to the auto backup folder
+    const handleBackupNow = async () => {
+        if (!can('backup.create')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
+        if (!autoBackupPath) {
+            addToast(t('backup.no_folder_selected') || 'Please select a backup folder first.', 'error');
+            return;
+        }
+        try {
+            setAutoBackupLoading(true);
+            const { generateBackupData } = await import('../../../services/backupService');
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const electron = (window as any).electron;
+            if (!electron || !electron.saveAutoBackup) {
+                addToast('Electron API not available.', 'error');
+                return;
+            }
+            const data = await generateBackupData();
+            const success = await electron.saveAutoBackup(autoBackupPath, data);
+            if (success) {
+                const now = Date.now();
+                localStorage.setItem('lastAutoBackupTime', now.toString());
+                setLastBackupTime(now);
+                addToast(t('backup.success_backup') || 'Backup saved successfully.', 'success');
+            } else {
+                addToast(t('backup.failed_backup') || 'Backup failed.', 'error');
+            }
+        } catch (err) {
+            console.error(err);
+            addToast(t('backup.failed_backup') || 'Backup failed.', 'error');
+        } finally {
+            setAutoBackupLoading(false);
+        }
+    };
+
+    // Fix #15: human-readable last backup timestamp
+    const formatLastBackup = (ts: number | null): string => {
+        if (!ts) return t('backup.never') || 'Never';
+        const d = new Date(ts);
+        return d.toLocaleString();
+    };
+
     const handleBackup = async () => {
+        if (!can('backup.create')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
         try {
             setLoading(true);
             const data = await generateBackupData();
-            const blob = new Blob([data], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `myshop_backup_${new Date().toISOString().split('T')[0]}.json`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            addToast(t('backup.success_backup'), 'success');
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const electron = (window as any).electron;
+            if (electron && electron.saveBackup) {
+                const success = await electron.saveBackup(data);
+                if (success) {
+                    addToast(t('backup.success_backup'), 'success');
+                } else {
+                    addToast(t('backup.failed_backup'), 'error');
+                }
+            } else {
+                const blob = new Blob([data], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `myshop_backup_${new Date().toISOString().split('T')[0]}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                addToast(t('backup.success_backup'), 'success');
+            }
         } catch (error) {
             console.error('Backup failed:', error);
             addToast(t('backup.failed_backup'), 'error');
@@ -69,9 +155,32 @@ const DataBackupTab: React.FC = () => {
     // Cloud Drive removed as per request
 
     const [pendingFile, setPendingFile] = useState<File | null>(null);
+    const [pendingRestoreContent, setPendingRestoreContent] = useState<string | null>(null);
 
-    const handleRestoreClick = () => {
-        fileInputRef.current?.click();
+    const handleRestoreClick = async () => {
+        if (!can('backup.restore')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const electron = (window as any).electron;
+        if (electron && electron.readBackup) {
+            try {
+                setLoading(true);
+                const content = await electron.readBackup();
+                if (content) {
+                    setPendingRestoreContent(content);
+                }
+            } catch (error) {
+                console.error('File reading failed:', error);
+                addToast(t('backup.failed_restore'), 'error');
+            } finally {
+                setLoading(false);
+            }
+        } else {
+            fileInputRef.current?.click();
+        }
     };
 
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -83,11 +192,21 @@ const DataBackupTab: React.FC = () => {
     };
 
     const handleConfirmRestore = async () => {
-        if (!pendingFile) return;
+        if (!can('backup.restore')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
+        if (!pendingFile && !pendingRestoreContent) return;
 
         try {
             setLoading(true);
-            const text = await pendingFile.text();
+            let text = '';
+            if (pendingRestoreContent) {
+                text = pendingRestoreContent;
+            } else if (pendingFile) {
+                text = await pendingFile.text();
+            }
             await restoreBackupData(text);
             addToast(t('backup.success_restore'), 'success');
             setTimeout(() => window.location.reload(), 2000);
@@ -97,6 +216,7 @@ const DataBackupTab: React.FC = () => {
         } finally {
             setLoading(false);
             setPendingFile(null);
+            setPendingRestoreContent(null);
         }
     };
 
@@ -117,6 +237,52 @@ const DataBackupTab: React.FC = () => {
     };
 
     // Drive configuration removed
+
+    const handleSaveWebTrackingConfig = () => {
+        if (!can('webTracking.update')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
+        saveWebTrackingConfig({
+            endpoint: webTrackingEndpoint,
+            token: webTrackingToken,
+            autoSyncEnabled: webTrackingAutoSync,
+        });
+        addToast('Web tracking settings saved.', 'success');
+    };
+
+    const handlePushWebTracking = async () => {
+        if (!can('webTracking.sync')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
+        try {
+            setWebTrackingLoading(true);
+            saveWebTrackingConfig({
+                endpoint: webTrackingEndpoint,
+                token: webTrackingToken,
+                autoSyncEnabled: webTrackingAutoSync,
+            });
+            const result = await pushWebTrackingChanges({
+                endpoint: webTrackingEndpoint,
+                token: webTrackingToken,
+            });
+            setLastWebTrackingSync(result.serverTime);
+            addToast(
+                result.accepted > 0
+                    ? `Synced ${result.accepted} records to web tracking.`
+                    : 'Web tracking is already up to date.',
+                'success',
+            );
+        } catch (error) {
+            console.error('Web tracking sync failed:', error);
+            addToast(error instanceof Error ? error.message : 'Web tracking sync failed.', 'error');
+        } finally {
+            setWebTrackingLoading(false);
+        }
+    };
 
     return (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -198,7 +364,7 @@ const DataBackupTab: React.FC = () => {
                 <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-3 text-purple-600 dark:text-purple-400">
                         <Clock size={24} />
-                        <h3 className="font-bold text-lg">{t('backup.auto_backup_title') || "Automatic Daily Backup"}</h3>
+                        <h3 className="font-bold text-lg">{t('backup.auto_backup_title') || 'Automatic Daily Backup'}</h3>
                     </div>
                     <div className="flex items-center">
                         <label className="relative inline-flex items-center cursor-pointer">
@@ -213,25 +379,123 @@ const DataBackupTab: React.FC = () => {
                     </div>
                 </div>
 
-                <div className="flex flex-col md:flex-row gap-4 items-center">
-                    <div className="flex-1 text-sm text-slate-600 dark:text-slate-400">
-                        {t('backup.auto_backup_desc') || "Automatically save a backup of your data to a local folder every 24 hours."}
+                <div className="flex flex-col md:flex-row gap-4 items-start md:items-center">
+                    {/* Left: description + last backup time */}
+                    <div className="flex-1">
+                        <p className="text-sm text-slate-600 dark:text-slate-400">
+                            {t('backup.auto_backup_desc') || 'Automatically save a backup of your data to a local folder every 24 hours.'}
+                        </p>
+                        {/* Fix #15: show last backup timestamp */}
+                        <p className="text-xs text-slate-400 dark:text-slate-500 mt-1 flex items-center gap-1">
+                            <CheckCircle size={12} className={lastBackupTime ? 'text-green-500' : 'text-slate-300'} />
+                            {t('backup.last_backup') || 'Last backup:'} <span className="font-medium">{formatLastBackup(lastBackupTime)}</span>
+                        </p>
                     </div>
 
-                    <div className="flex items-center gap-2 w-full md:w-auto">
+                    {/* Right: folder path + controls */}
+                    <div className="flex items-center gap-2 w-full md:w-auto flex-wrap">
                         <div className="flex-1 md:flex-initial px-4 py-2 bg-slate-100 dark:bg-slate-700 rounded-lg text-xs font-mono text-slate-500 overflow-hidden truncate max-w-[200px] border border-slate-200 dark:border-slate-600">
-                            {autoBackupPath || (t('backup.no_folder_selected') || "No folder selected")}
+                            {autoBackupPath || (t('backup.no_folder_selected') || 'No folder selected')}
                         </div>
+
+                        {/* Change folder button */}
                         <button
                             onClick={handleSelectBackupFolder}
                             className="p-2 bg-purple-100 text-purple-600 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400 rounded-lg transition-colors"
-                            title={t('backup.select_folder') || "Select Folder"}
+                            title={t('backup.select_folder') || 'Select Folder'}
                         >
                             <Folder size={20} />
+                        </button>
+
+                        {/* Fix #16: Backup Now button */}
+                        <button
+                            onClick={handleBackupNow}
+                            disabled={autoBackupLoading || !autoBackupPath}
+                            className="flex items-center gap-1.5 px-3 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-colors"
+                            title={t('backup.backup_now') || 'Backup Now'}
+                        >
+                            <Play size={14} />
+                            {autoBackupLoading ? '...' : (t('backup.backup_now') || 'Backup Now')}
                         </button>
                     </div>
                 </div>
             </div>
+
+            {
+                can('webTracking.view') && (
+                    <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700">
+                        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-5">
+                            <div className="flex items-start gap-3">
+                                <div className="p-2.5 bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300 rounded-xl">
+                                    <Cloud size={22} />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-lg text-slate-900 dark:text-white">Web Tracking Sync</h3>
+                                    <p className="text-sm text-slate-600 dark:text-slate-400 max-w-2xl">
+                                        Push company, branch, sales, inventory, customer, supplier, purchase, expense, cashbook, device, and audit changes to the tracking web app.
+                                    </p>
+                                    <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
+                                        Last sync: <span className="font-medium">{lastWebTrackingSync ? new Date(lastWebTrackingSync).toLocaleString() : 'Never'}</span>
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={handlePushWebTracking}
+                                disabled={webTrackingLoading || !can('webTracking.sync')}
+                                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg transition-colors"
+                            >
+                                <RefreshCw size={16} className={webTrackingLoading ? 'animate-spin' : ''} />
+                                {webTrackingLoading ? 'Syncing...' : 'Push Now'}
+                            </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-[1fr_0.8fr_auto] gap-3">
+                            <div>
+                                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Endpoint</label>
+                                <input
+                                    type="url"
+                                    value={webTrackingEndpoint}
+                                    disabled={!can('webTracking.update')}
+                                    onChange={(event) => setWebTrackingEndpoint(event.target.value)}
+                                    className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500 disabled:opacity-60"
+                                    placeholder="http://127.0.0.1:3000"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">API Token</label>
+                                <input
+                                    type="password"
+                                    value={webTrackingToken}
+                                    disabled={!can('webTracking.update')}
+                                    onChange={(event) => setWebTrackingToken(event.target.value)}
+                                    className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-cyan-500 disabled:opacity-60"
+                                    placeholder="demo-owner-token"
+                                />
+                            </div>
+                            <div className="flex items-end">
+                                <button
+                                    onClick={handleSaveWebTrackingConfig}
+                                    disabled={!can('webTracking.update')}
+                                    className="w-full lg:w-auto inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg transition-colors dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
+                                >
+                                    <Save size={16} />
+                                    Save
+                                </button>
+                            </div>
+                        </div>
+                        <label className="mt-4 flex items-center gap-3 text-sm font-semibold text-slate-700 dark:text-slate-200 normal-case">
+                            <input
+                                type="checkbox"
+                                checked={webTrackingAutoSync}
+                                disabled={!can('webTracking.update')}
+                                onChange={(event) => setWebTrackingAutoSync(event.target.checked)}
+                                className="h-4 w-4 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500"
+                            />
+                            Automatically push changes after local updates
+                        </label>
+                    </div>
+                )
+            }
 
             {/* Danger Zone */}
             {
@@ -334,8 +598,11 @@ const DataBackupTab: React.FC = () => {
             }
 
             <ConfirmationModal
-                isOpen={!!pendingFile}
-                onClose={() => setPendingFile(null)}
+                isOpen={!!pendingFile || !!pendingRestoreContent}
+                onClose={() => {
+                    setPendingFile(null);
+                    setPendingRestoreContent(null);
+                }}
                 onConfirm={handleConfirmRestore}
                 title={t('backup.import_title') || "Restore Backup"}
                 message={t('backup.warning') || "Warning: This will replace all current data with the backup. This action cannot be undone."}

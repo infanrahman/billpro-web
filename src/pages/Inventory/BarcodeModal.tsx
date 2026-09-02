@@ -5,6 +5,7 @@ import QRCode from 'qrcode';
 import { Printer, Code2, QrCode } from 'lucide-react';
 import { useSettings } from '../../contexts/SettingsContext';
 import { useTranslation } from 'react-i18next';
+import { useNotification } from '../../contexts/NotificationContext';
 import { printContent } from '../../services/printerService';
 import JsBarcode from 'jsbarcode';
 
@@ -17,6 +18,7 @@ interface BarcodeModalProps {
 const BarcodeModal: React.FC<BarcodeModalProps> = ({ isOpen, onClose, items }) => {
     const { t } = useTranslation();
     const { formatCurrency } = useSettings();
+    const { addToast } = useNotification();
     const [qrUrl, setQrUrl] = useState('');
     const [barcodeUrl, setBarcodeUrl] = useState('');
 
@@ -32,6 +34,14 @@ const BarcodeModal: React.FC<BarcodeModalProps> = ({ isOpen, onClose, items }) =
     const [showSupplier, setShowSupplier] = useState(true);
     const [showProductCode, setShowProductCode] = useState(true);
     const [showCostCode, setShowCostCode] = useState(true);
+
+    const [shopFontSize, setShopFontSize] = useState<number>(8);
+    const [productFontSize, setProductFontSize] = useState<number>(9);
+    const [priceFontSize, setPriceFontSize] = useState<number>(11);
+
+    const [shopAlignment, setShopAlignment] = useState<'left' | 'center' | 'right'>('center');
+    const [productAlignment, setProductAlignment] = useState<'left' | 'center' | 'right'>('center');
+    const [priceAlignment, setPriceAlignment] = useState<'left' | 'center' | 'right'>('center');
 
     // Derived Cost Code
     const [costCode, setCostCode] = useState<string>('');
@@ -136,9 +146,10 @@ const BarcodeModal: React.FC<BarcodeModalProps> = ({ isOpen, onClose, items }) =
     }, [isOpen, item]);
 
     const handlePrint = async () => {
-        if (!items || items.length === 0) return;
+        try {
+            if (!items || items.length === 0) return;
 
-        const savedConfig = localStorage.getItem('printerConfig');
+            const savedConfig = localStorage.getItem('printerConfig');
         const config = savedConfig ? JSON.parse(savedConfig) : {};
         const isBarcodeEnabled = config.enableBarcodePrinter;
         const bConfig = config.barcode || {};
@@ -158,7 +169,7 @@ const BarcodeModal: React.FC<BarcodeModalProps> = ({ isOpen, onClose, items }) =
             // 1. Get supplier name
             let itemSupplierName = '';
             if (printItem.supplierId) {
-                const sup = await db.suppliers.get(Number(printItem.supplierId));
+                const sup = await db.suppliers.get(printItem.supplierId);
                 if (sup) itemSupplierName = sup.name;
             } else if ((printItem as any).supplierNameFallback) {
                 itemSupplierName = (printItem as any).supplierNameFallback;
@@ -267,9 +278,9 @@ const BarcodeModal: React.FC<BarcodeModalProps> = ({ isOpen, onClose, items }) =
                     background: white;
                 }
                 /* Font sizes scale down naturally but have a floor to prevent unreadability */
-                .shop-name { font-size: 8px; font-weight: bold; margin: 0; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-                .name { font-weight: bold; font-size: 9px; line-height: 1; margin: 0; max-height: 18px; overflow: hidden; max-width: 100%; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-                .price { font-size: 11px; font-weight: 900; margin: 0; }
+                .shop-name { font-size: ${shopFontSize + 2}px; font-weight: bold; margin: 0; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; text-align: ${shopAlignment}; }
+                .name { font-weight: bold; font-size: ${productFontSize + 4}px; line-height: 1; margin: 0; max-height: 24px; overflow: hidden; max-width: 100%; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; text-align: ${productAlignment}; }
+                .price { font-size: ${priceFontSize + 7}px; font-weight: 900; margin: 0; text-align: ${priceAlignment}; }
                 .supplier { font-size: 8px; margin: 0; color: #333; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; font-weight: bold; }
                 .barcode-wrapper { flex: 1; min-height: 0; display: flex; flex-direction: row; align-items: center; justify-content: center; width: 100%; margin: 1px 0; overflow: hidden; }
                 .barcode-container { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; width: 100%; min-height: 0; }
@@ -285,13 +296,24 @@ const BarcodeModal: React.FC<BarcodeModalProps> = ({ isOpen, onClose, items }) =
         </html>
         `;
 
-        // Pass copies: 1 since we already duplicated the HTML tags N times
-        await printContent(html, {
-            selectedPrinter: printerName || undefined,
-            silent: config.enableSilentPrint ?? true,
-            pageSize: (widthMicrons && heightMicrons) ? { width: widthMicrons, height: heightMicrons } : 'thermal',
-            copies: 1
-        } as any);
+            // Pass copies: 1 since we already duplicated the HTML tags N times
+            const success = await printContent(html, {
+                selectedPrinter: printerName || undefined,
+                silent: config.enableSilentPrint ?? true,
+                pageSize: (widthMicrons && heightMicrons) ? { width: widthMicrons, height: heightMicrons } : 'thermal',
+                copies: 1
+            } as any);
+
+            if (success) {
+                addToast(t('print.success') || 'Labels sent to printer', 'success');
+                onClose();
+            } else {
+                addToast(t('print.failed') || 'Failed to print labels. Check printer configuration.', 'error');
+            }
+        } catch (error: any) {
+            console.error("Barcode print error:", error);
+            addToast(error.message || 'An error occurred during print', 'error');
+        }
     };
 
     return (
@@ -301,9 +323,24 @@ const BarcodeModal: React.FC<BarcodeModalProps> = ({ isOpen, onClose, items }) =
                 {/* Left Side: Preview Area */}
                 <div className="bg-slate-50 p-6 border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center w-full justify-center min-h-[250px] dark:bg-slate-300 overflow-hidden">
                     <div className="bg-white border rounded shadow-sm w-[200px] p-3 flex flex-col items-center text-black">
-                        {showShopName && businessName && <p className="text-[10px] font-bold uppercase mb-1">{businessName}</p>}
-                        {showProductName && <p className="text-[13px] font-bold leading-tight mb-1 max-w-[90%] truncate text-center">{item?.name}</p>}
-                        {showPrice && item && <p className="text-[18px] font-black leading-none mb-1">{formatCurrency(item.salePrice)}</p>}
+                        {showShopName && businessName && (
+                            <p className="font-bold uppercase mb-1" 
+                               style={{ fontSize: `${shopFontSize + 2}px`, textAlign: shopAlignment, width: '100%' }}>
+                                {businessName}
+                            </p>
+                        )}
+                        {showProductName && (
+                            <p className="font-bold leading-tight mb-1 max-w-[100%] truncate" 
+                               style={{ fontSize: `${productFontSize + 4}px`, textAlign: productAlignment, width: '100%' }}>
+                                {item?.name}
+                            </p>
+                        )}
+                        {showPrice && item && (
+                            <p className="font-black leading-none mb-1" 
+                               style={{ fontSize: `${priceFontSize + 7}px`, textAlign: priceAlignment, width: '100%' }}>
+                                {formatCurrency(item.salePrice)}
+                            </p>
+                        )}
                         {showSupplier && supplierName && <p className="text-[9px] text-gray-700 mb-2 font-semibold">Sup: {supplierName}</p>}
 
                         <div className="flex flex-row items-center justify-center w-full mb-1">
@@ -379,6 +416,42 @@ const BarcodeModal: React.FC<BarcodeModalProps> = ({ isOpen, onClose, items }) =
                                 {t('inventory.show_cost_code') || 'Show Secret Cost Code'}
                             </label>
                         )}
+                    </div>
+
+                    <div className="pt-3 border-t border-slate-100 dark:border-slate-700 space-y-3">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">Shop Size</span>
+                            <div className="flex gap-1">
+                                <input type="number" value={shopFontSize} onChange={(e) => setShopFontSize(parseInt(e.target.value) || 8)} className="w-16 p-1 text-xs border rounded text-center dark:bg-slate-700 dark:text-white" />
+                                <select value={shopAlignment} onChange={(e) => setShopAlignment(e.target.value as any)} className="text-xs border rounded p-1 dark:bg-slate-700 dark:text-white">
+                                    <option value="left">Left</option>
+                                    <option value="center">Center</option>
+                                    <option value="right">Right</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">Name Size</span>
+                            <div className="flex gap-1">
+                                <input type="number" value={productFontSize} onChange={(e) => setProductFontSize(parseInt(e.target.value) || 9)} className="w-16 p-1 text-xs border rounded text-center dark:bg-slate-700 dark:text-white" />
+                                <select value={productAlignment} onChange={(e) => setProductAlignment(e.target.value as any)} className="text-xs border rounded p-1 dark:bg-slate-700 dark:text-white">
+                                    <option value="left">Left</option>
+                                    <option value="center">Center</option>
+                                    <option value="right">Right</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">Price Size</span>
+                            <div className="flex gap-1">
+                                <input type="number" value={priceFontSize} onChange={(e) => setPriceFontSize(parseInt(e.target.value) || 11)} className="w-16 p-1 text-xs border rounded text-center dark:bg-slate-700 dark:text-white" />
+                                <select value={priceAlignment} onChange={(e) => setPriceAlignment(e.target.value as any)} className="text-xs border rounded p-1 dark:bg-slate-700 dark:text-white">
+                                    <option value="left">Left</option>
+                                    <option value="center">Center</option>
+                                    <option value="right">Right</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
 
                     {items && items.length <= 1 && (

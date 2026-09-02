@@ -45,7 +45,10 @@ export const generateVatReportA4 = (
                 ${business.phone ? `<div class="detail-row"><strong>${t('common.phone') || 'Tel'}:</strong> ${business.phone}</div>` : ''}
                 ${business.email ? `<div class="detail-row"><strong>${t('common.email') || 'Email'}:</strong> ${business.email}</div>` : ''}
                 <div class="tax-row">
-                    ${business.gstin ? `<span><strong>${t('reports.vat_no') || 'TRN'}:</strong> ${business.gstin}</span>` : ''}
+                    ${(() => {
+                        const trn = (business.gstin || '').trim();
+                        return trn ? `<span><strong>${t('reports.vat_no') || 'TRN'}:</strong> ${trn}</span>` : '';
+                    })()}
                     ${business.crNo ? `<span><strong>${t('reports.cr_no') || 'CR'}:</strong> ${business.crNo}</span>` : ''}
                 </div>
             </div>
@@ -290,9 +293,12 @@ export const generateVatReportThermal = (
     <body>
         <div class="header">
             <div class="business-name">${business.name || 'Business Name'}</div>
-            <div class="business-info">${business.address || ''}</div>
+            ${business.address ? `<div class="business-info">${business.address}</div>` : ''}
             ${business.phone ? `<div class="business-info">${t('common.phone') || 'Tel'}: ${business.phone}</div>` : ''}
-            ${business.gstin ? `<div class="business-info">${t('reports.vat_no') || 'TRN'}: ${business.gstin}</div>` : ''}
+            ${(() => {
+                const trn = (business.gstin || '').trim();
+                return trn ? `<div class="business-info">${t('reports.vat_no') || 'TRN'}: ${trn}</div>` : '';
+            })()}
         </div>
 
         <div class="report-title">${t('reports.vat_report').toUpperCase()}</div>

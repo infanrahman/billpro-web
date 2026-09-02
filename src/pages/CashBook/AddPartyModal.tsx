@@ -3,6 +3,7 @@ import { X, User, Phone, DollarSign, ArrowUpCircle, ArrowDownCircle } from 'luci
 import { db, type CashParty, createRecordMetadata } from '../../services/db';
 import { useTranslation } from 'react-i18next';
 import { useNotification } from '../../contexts/NotificationContext';
+import { useAuth } from '../../contexts/AuthContext';
 
 interface AddPartyModalProps {
     isOpen: boolean;
@@ -14,6 +15,7 @@ interface AddPartyModalProps {
 const AddPartyModal: React.FC<AddPartyModalProps> = ({ isOpen, onClose, onSave, defaultType = 'other' }) => {
     const { t } = useTranslation();
     const { addToast } = useNotification();
+    const { canCreate } = useAuth();
 
     const [name, setName] = useState('');
     const [phone, setPhone] = useState('');
@@ -27,6 +29,10 @@ const AddPartyModal: React.FC<AddPartyModalProps> = ({ isOpen, onClose, onSave, 
 
         if (!name.trim()) {
             addToast(t('common.required'), 'error');
+            return;
+        }
+        if (!canCreate('cashbook')) {
+            addToast(t('common.access_denied'), 'error');
             return;
         }
 

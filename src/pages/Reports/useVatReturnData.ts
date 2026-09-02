@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { db } from '../../services/db';
+import { db, matchesActiveScope } from '../../services/db';
 import { useAuth } from '../../contexts/AuthContext';
 import { startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear } from 'date-fns';
 
@@ -31,7 +31,7 @@ export interface VatReturnData {
 }
 
 export const useVatReturnData = (period: VatPeriod, customStartStr?: string, customEndStr?: string) => {
-    const { activeBranchId, activeBranch } = useAuth();
+    const { activeCompanyId, activeBranchId, activeBranch } = useAuth();
     const [data, setData] = useState<VatReturnData | null>(null);
     const [loading, setLoading] = useState(true);
 
@@ -93,7 +93,7 @@ export const useVatReturnData = (period: VatPeriod, customStartStr?: string, cus
                 // RULE: Use the invoice grandTotal as the "amount", not per-item net
                 const invoices = await db.invoices
                     .where('createdAt').between(start, end, true, true)
-                    .and((inv: any) => (activeBranch?.isMaster || inv.branchId === activeBranchId) && inv.status !== 'cancelled' && inv.status !== 'draft' && !inv.deletedAt)
+                    .and((inv: any) => matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster) && inv.status !== 'cancelled' && inv.status !== 'draft' && !inv.deletedAt)
                     .toArray();
 
                 for (const inv of invoices) {
@@ -136,7 +136,7 @@ export const useVatReturnData = (period: VatPeriod, customStartStr?: string, cus
                 // RULE: Use the purchase bill totalAmount, not per-item cost
                 const purchaseRecs = await db.purchases
                     .where('date').between(start, end, true, true)
-                    .and((pur: any) => (activeBranch?.isMaster || pur.branchId === activeBranchId) && pur.status !== 'cancelled' && !pur.deletedAt)
+                    .and((pur: any) => matchesActiveScope(pur, activeCompanyId, activeBranchId, activeBranch?.isMaster) && pur.status !== 'cancelled' && !pur.deletedAt)
                     .toArray();
 
                 for (const pur of purchaseRecs) {
@@ -210,7 +210,7 @@ export const useVatReturnData = (period: VatPeriod, customStartStr?: string, cus
         };
 
         fetchData();
-    }, [period, customStartStr, customEndStr, activeBranchId, activeBranch?.isMaster]);
+    }, [period, customStartStr, customEndStr, activeCompanyId, activeBranchId, activeBranch?.isMaster]);
 
     return { data, loading };
 };

@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { db } from '../../services/db';
+import { db, matchesActiveScope } from '../../services/db';
 import { useAuth } from '../../contexts/AuthContext';
 import { startOfWeek, startOfMonth, startOfYear, format, startOfDay, endOfDay } from 'date-fns';
+import { calculateLineItem } from '../../utils/financials';
 
 export type VatPeriod = 'daily' | 'weekly' | 'monthly' | 'yearly' | 'custom';
 
@@ -14,7 +15,7 @@ export interface VatDataRow {
 }
 
 export const useVatData = (period: VatPeriod, customStart?: Date, customEnd?: Date) => {
-    const { activeBranchId, activeBranch } = useAuth();
+    const { activeCompanyId, activeBranchId, activeBranch } = useAuth();
     const [data, setData] = useState<VatDataRow[]>([]);
     const [totals, setTotals] = useState({ netSales: 0, vatAmount: 0, grossSales: 0 });
     const [loading, setLoading] = useState(true);
@@ -64,13 +65,12 @@ export const useVatData = (period: VatPeriod, customStart?: Date, customEnd?: Da
                     allInvoices = await db.invoices
                         .where('createdAt')
                         .between(queryStart, queryEnd, true, true)
-                        .and((inv: any) => (activeBranch?.isMaster || inv.branchId === activeBranchId) && inv.status !== 'cancelled' && inv.status !== 'draft' && !inv.deletedAt)
+                        .and((inv: any) => matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster) && inv.status !== 'cancelled' && inv.status !== 'draft' && !inv.deletedAt)
                         .toArray();
                 } else {
                     // Fallback (shouldn't happen)
-                    const invoicesQuery = activeBranch?.isMaster ? db.invoices : db.invoices.where('branchId').equals(activeBranchId);
-                    allInvoices = await (invoicesQuery as any)
-                        .filter((inv: any) => inv.status !== 'cancelled' && inv.status !== 'draft' && !inv.deletedAt)
+                    allInvoices = await db.invoices
+                        .filter((inv: any) => matchesActiveScope(inv, activeCompanyId, activeBranchId, activeBranch?.isMaster) && inv.status !== 'cancelled' && inv.status !== 'draft' && !inv.deletedAt)
                         .toArray();
                 }
 
@@ -152,31 +152,32 @@ export const useVatData = (period: VatPeriod, customStart?: Date, customEnd?: Da
 
                     if (inv.items && inv.items.length > 0) {
                         inv.items.forEach((item: any) => {
-                            const amount = (item.price || 0) * (item.quantity || 0);
-                            const rate = item.taxRate !== undefined ? item.taxRate : (inv.taxRate || 0);
-                            const type = item.taxType || (inv.taxType === 'inclusive' ? 'inclusive' : 'exclusive');
-
                             let itemTax = 0;
                             let itemNet = 0;
                             let itemGross = 0;
 
-                            // Priority: 1. Stored taxAmount 2. Calculated fallback
-                            if (item.taxAmount !== undefined) {
+                            // Priority: 1. Stored pre-calculated fields (best for consistency)
+                            //           2. Calculate fresh using the unified utility (best for legacy/fallback)
+                            if (item.taxAmount !== undefined && item.netAmount !== undefined) {
                                 itemTax = item.taxAmount;
-                                itemGross = item.total || amount;
-                                itemNet = itemGross - itemTax;
+                                itemNet = item.netAmount;
+                                itemGross = item.total || (itemNet + itemTax);
                             } else {
-                                if (type === 'inclusive') {
-                                    const base = amount / (1 + (rate / 100));
-                                    itemTax = Math.round((amount - base) * 100) / 100;
-                                    itemNet = Math.round(base * 100) / 100;
-                                    itemGross = Math.round(amount * 100) / 100;
-                                } else {
-                                    const tax = amount * (rate / 100);
-                                    itemTax = Math.round(tax * 100) / 100;
-                                    itemNet = Math.round(amount * 100) / 100;
-                                    itemGross = Math.round((amount + itemTax) * 100) / 100;
-                                }
+                                const rate = item.taxRate !== undefined ? item.taxRate : (inv.taxRate || 0);
+                                const type = item.taxType || (inv.taxType === 'inclusive' ? 'inclusive' : 'exclusive');
+                                
+                                const totals = calculateLineItem({
+                                    price: item.price || 0,
+                                    quantity: item.quantity || 0,
+                                    taxRate: rate,
+                                    taxType: type === 'inclusive' ? 'inclusive' : 'exclusive',
+                                    discount: 0,
+                                    discountType: 'fixed'
+                                });
+                                
+                                itemTax = totals.taxAmount;
+                                itemNet = totals.taxableAmount;
+                                itemGross = totals.total;
                             }
 
                             invoiceTax += itemTax;
@@ -184,10 +185,10 @@ export const useVatData = (period: VatPeriod, customStart?: Date, customEnd?: Da
                             invoiceGross += itemGross;
                         });
                     } else {
-                        // Fallback to header if items are missing (shouldn't happen)
+                        // Fallback to header if items are missing
                         invoiceTax = inv.taxAmount || 0;
                         invoiceGross = inv.grandTotal || 0;
-                        invoiceNet = inv.subTotal || (invoiceGross - invoiceTax);
+                        invoiceNet = inv.netAmount || (invoiceGross - invoiceTax);
                     }
 
                     if (isReturn) {
@@ -225,7 +226,7 @@ export const useVatData = (period: VatPeriod, customStart?: Date, customEnd?: Da
         };
 
         fetchData();
-    }, [period, customStart, customEnd, activeBranchId, activeBranch?.isMaster]);
+    }, [period, customStart, customEnd, activeCompanyId, activeBranchId, activeBranch?.isMaster]);
 
     return { data, totals, loading };
 };
