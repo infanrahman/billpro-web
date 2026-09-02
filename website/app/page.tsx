@@ -397,6 +397,7 @@ const downloadCsv = (filename: string, rows: Array<Record<string, unknown>>) => 
 
 export default function TrackingDashboard() {
   const restoreInputRef = useRef<HTMLInputElement>(null);
+  const syncEndpoint = typeof window === "undefined" ? "http://127.0.0.1:3000" : window.location.origin;
   const [authToken, setAuthToken] = useState("");
   const [loginForm, setLoginForm] = useState({ username: "owner", password: "owner123" });
   const [authLoading, setAuthLoading] = useState(false);
@@ -934,7 +935,7 @@ export default function TrackingDashboard() {
         <div className="sync-card">
           <Cloud size={20} />
           <strong>Desktop sync endpoint</strong>
-          <code>http://127.0.0.1:3000</code>
+          <code>{syncEndpoint}</code>
           <span>Create a managed token below and use it in the POS Backup tab.</span>
         </div>
         <div className="sync-card" id="sync">
