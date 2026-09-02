@@ -403,6 +403,9 @@ export default function TrackingDashboard() {
   const [authLoading, setAuthLoading] = useState(false);
   const [tokens, setTokens] = useState<AuthToken[]>([]);
   const [newTokenName, setNewTokenName] = useState("Desktop sync token");
+  const [createdToken, setCreatedToken] = useState("");
+  const [creatingToken, setCreatingToken] = useState(false);
+  const [tokenCopied, setTokenCopied] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [companyId, setCompanyId] = useState(defaultCompanyId);
   const [branchId, setBranchId] = useState("");
@@ -521,12 +524,28 @@ export default function TrackingDashboard() {
   };
 
   const createToken = async () => {
-    const result = await apiRequest("/api/tracking/tokens", {
-      method: "POST",
-      body: JSON.stringify({ name: newTokenName, daysValid: 90 }),
-    });
-    setNewTokenName(result.token);
-    await loadTokens();
+    try {
+      setCreatingToken(true);
+      setTokenCopied(false);
+      setError("");
+      const result = await apiRequest("/api/tracking/tokens", {
+        method: "POST",
+        body: JSON.stringify({ name: newTokenName || "Desktop sync token", daysValid: 90 }),
+      });
+      setCreatedToken(result.token);
+      setNewTokenName("Desktop sync token");
+      await loadTokens();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to create access token");
+    } finally {
+      setCreatingToken(false);
+    }
+  };
+
+  const copyCreatedToken = async () => {
+    if (!createdToken) return;
+    await navigator.clipboard.writeText(createdToken);
+    setTokenCopied(true);
   };
 
   const revokeToken = async (tokenId: string) => {
@@ -942,7 +961,16 @@ export default function TrackingDashboard() {
           <LockKeyhole size={20} />
           <strong>Access tokens</strong>
           <input value={newTokenName} onChange={(event) => setNewTokenName(event.target.value)} placeholder="Token name" />
-          <button onClick={() => void createToken()} disabled={!hasPermission("users.update") && overview?.principal.role !== "owner"}>Create Token</button>
+          <button onClick={() => void createToken()} disabled={creatingToken || (!hasPermission("users.update") && overview?.principal.role !== "owner")}>
+            {creatingToken ? "Creating..." : "Create Token"}
+          </button>
+          {createdToken && (
+            <div className="created-token">
+              <span>{tokenCopied ? "Token copied" : "New token created. Copy it now."}</span>
+              <code>{createdToken}</code>
+              <button onClick={() => void copyCreatedToken()}>Copy Token</button>
+            </div>
+          )}
           <button onClick={() => void loadTokens()}>Refresh Tokens</button>
           <button onClick={() => void logout()}>Sign Out</button>
           {tokens.slice(0, 3).map((item) => (
@@ -951,7 +979,6 @@ export default function TrackingDashboard() {
               {!item.revokedAt && <button onClick={() => void revokeToken(item.id)}>Revoke</button>}
             </span>
           ))}
-          {newTokenName.startsWith("bt_") && <code>{newTokenName}</code>}
         </div>
         <div className="sync-card">
           <Database size={20} />

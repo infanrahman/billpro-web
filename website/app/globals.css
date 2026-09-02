@@ -200,6 +200,21 @@ a {
   gap: 6px;
 }
 
+.created-token {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(94, 234, 212, 0.28);
+  border-radius: 8px;
+  background: rgba(20, 184, 166, 0.1);
+}
+
+.created-token span {
+  color: #a7f3d0;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
 .hidden-file {
   display: none;
 }
