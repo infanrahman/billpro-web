@@ -1,5 +1,24 @@
 # Billing Pro Tracking Deployment
 
+## Vercel
+
+Vercel is the recommended host for the Next.js dashboard and API routes.
+
+1. Push this repository branch to GitHub.
+2. In Vercel, create a new project and select the `website` folder as the root directory.
+3. Use Node.js `24.x`. The project also declares this in `package.json`.
+4. Add environment variables from `.env.example`.
+5. Deploy.
+
+Important storage note: the current repository uses SQLite for local testing. Vercel Functions can run Node.js code, but local filesystem data is not durable for production app data. Before using this with real company data, migrate `website/lib/tracking/repository.ts` to a hosted database such as Vercel Postgres, Neon, or Supabase.
+
+Recommended free-test path:
+
+- Deploy the dashboard to Vercel first.
+- Keep `BILLING_TRACKING_BOOTSTRAP_ENABLED=true` only for first setup.
+- Use it to validate pages, login, permissions, and API reachability.
+- Then connect hosted Postgres before syncing real POS data.
+
 ## Local Production Check
 
 ```bash
