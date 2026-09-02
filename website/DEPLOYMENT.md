@@ -10,7 +10,7 @@ Vercel is the recommended host for the Next.js dashboard and API routes.
 4. Add environment variables from `.env.example`.
 5. Deploy.
 
-Important storage note: the current repository uses SQLite for local testing. Vercel Functions can run Node.js code, but local filesystem data is not durable for production app data. Before using this with real company data, migrate `website/lib/tracking/repository.ts` to a hosted database such as Vercel Postgres, Neon, or Supabase.
+Important storage note: the current repository uses SQLite for local testing. On Vercel, SQLite defaults to `/tmp/tracking.sqlite` so the API can be tested, but that file is ephemeral and can disappear between function instances or deployments. Before using this with real company data, migrate `website/lib/tracking/repository.ts` to a hosted database such as Vercel Postgres, Neon, or Supabase.
 
 Recommended free-test path:
 
