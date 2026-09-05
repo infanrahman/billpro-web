@@ -252,7 +252,7 @@ const DataBackupTab: React.FC = () => {
         addToast('Web tracking settings saved.', 'success');
     };
 
-    const handlePushWebTracking = async () => {
+    const handlePushWebTracking = async (forceFullSync = false) => {
         if (!can('webTracking.sync')) {
             addToast(t('common.access_denied'), 'error');
             return;
@@ -268,7 +268,7 @@ const DataBackupTab: React.FC = () => {
             const result = await pushWebTrackingChanges({
                 endpoint: webTrackingEndpoint,
                 token: webTrackingToken,
-            });
+            }, forceFullSync);
             setLastWebTrackingSync(result.serverTime);
             addToast(
                 result.accepted > 0
@@ -440,12 +440,20 @@ const DataBackupTab: React.FC = () => {
                                 </div>
                             </div>
                             <button
-                                onClick={handlePushWebTracking}
+                                onClick={() => void handlePushWebTracking(false)}
                                 disabled={webTrackingLoading || !can('webTracking.sync')}
                                 className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg transition-colors"
                             >
                                 <RefreshCw size={16} className={webTrackingLoading ? 'animate-spin' : ''} />
                                 {webTrackingLoading ? 'Syncing...' : 'Push Now'}
+                            </button>
+                            <button
+                                onClick={() => void handlePushWebTracking(true)}
+                                disabled={webTrackingLoading || !can('webTracking.sync')}
+                                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-700 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg transition-colors"
+                            >
+                                <Database size={16} />
+                                Push All Data
                             </button>
                         </div>
 

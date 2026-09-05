@@ -169,10 +169,11 @@ export const collectWebTrackingChanges = async (lastSyncAt?: string | null) => {
 
 export const pushWebTrackingChanges = async (
     overrides: Partial<Pick<WebTrackingConfig, 'endpoint' | 'token'>> = {},
+    forceFullSync = false,
 ) => {
     const config = { ...getWebTrackingConfig(), ...overrides };
     const endpoint = normaliseEndpoint(config.endpoint || defaultEndpoint);
-    const changes = await collectWebTrackingChanges(config.lastSyncAt);
+    const changes = await collectWebTrackingChanges(forceFullSync ? null : config.lastSyncAt);
     const response = await fetch(`${endpoint}/api/sync/push`, {
         method: 'POST',
         headers: {
