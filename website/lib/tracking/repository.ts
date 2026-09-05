@@ -21,6 +21,18 @@ interface SyncBatchRecord extends SyncPushResult {
   branchId?: string;
 }
 
+interface DeviceRecord {
+  deviceId: string;
+  deviceName: string;
+  companyId: string;
+  branchId?: string;
+  lastSeenAt: string;
+  accepted: number;
+  rejected: number;
+  batches: number;
+  revokedAt?: string;
+}
+
 interface LegacyTrackingDatabase {
   entities?: EntityTables;
   audit?: AuditEntry[];
@@ -238,6 +250,18 @@ const getDatabase = () => {
       branchId TEXT,
       data TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS devices (
+      deviceId TEXT PRIMARY KEY,
+      deviceName TEXT NOT NULL,
+      companyId TEXT NOT NULL,
+      branchId TEXT,
+      lastSeenAt TEXT NOT NULL,
+      accepted INTEGER NOT NULL DEFAULT 0,
+      rejected INTEGER NOT NULL DEFAULT 0,
+      batches INTEGER NOT NULL DEFAULT 0,
+      revokedAt TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_devices_scope ON devices (companyId, branchId, revokedAt);
     CREATE TABLE IF NOT EXISTS auth_tokens (
       id TEXT PRIMARY KEY,
       userId TEXT NOT NULL,
@@ -319,22 +343,25 @@ export const trackingRepository = {
   async getDeviceStatuses(companyId: string, branchId?: string) {
     const db = getDatabase();
     const rows = (branchId
-      ? db.prepare(`SELECT deviceId, companyId, branchId, data FROM sync_batches WHERE companyId = ? AND (branchId IS NULL OR branchId = '' OR branchId = ?) ORDER BY rowid DESC`).all(companyId, branchId)
-      : db.prepare("SELECT deviceId, companyId, branchId, data FROM sync_batches WHERE companyId = ? ORDER BY rowid DESC").all(companyId)) as Array<{ deviceId: string; companyId: string; branchId: string | null; data: string }>;
-    const devices = new Map<string, { deviceId: string; companyId: string; branchId?: string; lastSeenAt: string; lastBatchId: string; accepted: number; rejected: number; batches: number }>();
-    for (const row of rows) {
-      const batch = parseJson<SyncBatchRecord>(row.data, {} as SyncBatchRecord);
-      const current = devices.get(row.deviceId);
-      const seenAt = batch.serverTime || new Date(0).toISOString();
-      if (!current) {
-        devices.set(row.deviceId, { deviceId: row.deviceId, companyId: row.companyId, branchId: row.branchId || undefined, lastSeenAt: seenAt, lastBatchId: batch.batchId, accepted: batch.accepted || 0, rejected: batch.rejected || 0, batches: 1 });
-      } else {
-        current.accepted += batch.accepted || 0;
-        current.rejected += batch.rejected || 0;
-        current.batches += 1;
-      }
-    }
-    return [...devices.values()];
+      ? db.prepare("SELECT * FROM devices WHERE companyId = ? AND (branchId IS NULL OR branchId = '' OR branchId = ?) ORDER BY lastSeenAt DESC").all(companyId, branchId)
+      : db.prepare("SELECT * FROM devices WHERE companyId = ? ORDER BY lastSeenAt DESC").all(companyId)) as unknown as Array<DeviceRecord & { revokedAt: string | null }>;
+    return rows.map((row) => ({ ...row, branchId: row.branchId || undefined, revokedAt: row.revokedAt || undefined }));
+  },
+
+  async registerDevice(device: { deviceId: string; deviceName?: string; companyId: string; branchId?: string; accepted: number; rejected: number }) {
+    const db = getDatabase();
+    const now = new Date().toISOString();
+    const existing = db.prepare("SELECT revokedAt FROM devices WHERE deviceId = ?").get(device.deviceId) as { revokedAt: string | null } | undefined;
+    if (existing?.revokedAt) return false;
+    db.prepare(`INSERT INTO devices (deviceId, deviceName, companyId, branchId, lastSeenAt, accepted, rejected, batches) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+      ON CONFLICT(deviceId) DO UPDATE SET deviceName = excluded.deviceName, companyId = excluded.companyId, branchId = excluded.branchId, lastSeenAt = excluded.lastSeenAt, accepted = devices.accepted + excluded.accepted, rejected = devices.rejected + excluded.rejected`).run(device.deviceId, device.deviceName || device.deviceId, device.companyId, device.branchId || null, now, device.accepted, device.rejected);
+    return true;
+  },
+
+  async revokeDevice(principal: TrackingPrincipal, deviceId: string, companyId: string) {
+    if (principal.role !== "owner" && !principal.permissions.includes("users.update")) return false;
+    const result = getDatabase().prepare("UPDATE devices SET revokedAt = ? WHERE deviceId = ? AND companyId = ?").run(new Date().toISOString(), deviceId, companyId);
+    return result.changes > 0;
   },
 
   async getRecord<TRecord extends BaseRecord>(entity: TrackingEntity, id: string) {
@@ -533,6 +560,15 @@ export const trackingRepository = {
         replayed: true,
       };
     }
+    const deviceAccepted = await this.registerDevice({
+      deviceId: payload.deviceId,
+      deviceName: payload.deviceName,
+      companyId: payload.scope.companyId,
+      branchId: payload.scope.branchId,
+      accepted: 0,
+      rejected: 0,
+    });
+    if (!deviceAccepted) throw new Error("Device access has been revoked");
 
     let accepted = 0;
     let rejected = 0;
@@ -574,6 +610,9 @@ export const trackingRepository = {
         auditIds,
         serverTime: new Date().toISOString(),
       };
+
+      db.prepare("UPDATE devices SET accepted = accepted + ?, rejected = rejected + ?, lastSeenAt = ? WHERE deviceId = ?")
+        .run(accepted, rejected, result.serverTime, payload.deviceId);
 
       insertBatch(db, {
         ...result,

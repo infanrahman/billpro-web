@@ -269,13 +269,14 @@ type BranchHealthRecord = {
 
 type DeviceStatus = {
   deviceId: string;
+  deviceName: string;
   branchId?: string;
   lastSeenAt: string;
   lastBatchId: string;
   accepted: number;
   rejected: number;
   batches: number;
-  status: "online" | "offline";
+  status: "online" | "offline" | "revoked";
 };
 
 const defaultCompanyId = "11111111-1111-1111-1111-111111111111";
@@ -449,6 +450,10 @@ export default function TrackingDashboard() {
   const hasPermission = (permission: string) =>
     overview?.principal.role === "owner" || Boolean(overview?.principal.permissions.includes(permission));
 
+  const authHeader: Record<string, string> = authToken && authToken !== "cookie-session"
+    ? { Authorization: `Bearer ${authToken}` }
+    : {};
+
   const loadOverview = async () => {
     if (!authToken) {
       setLoading(false);
@@ -461,11 +466,12 @@ export default function TrackingDashboard() {
       const params = new URLSearchParams({ companyId });
       if (branchId) params.set("branchId", branchId);
       const response = await fetch(`/api/tracking/overview?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${authToken}` },
+        credentials: "include",
+        headers: authHeader,
       });
       if (!response.ok) throw new Error(await response.text());
       setOverview(await response.json());
-      const deviceResponse = await fetch(`/api/tracking/devices?${params.toString()}`, { headers: { Authorization: `Bearer ${authToken}` } });
+      const deviceResponse = await fetch(`/api/tracking/devices?${params.toString()}`, { credentials: "include", headers: authHeader });
       if (deviceResponse.ok) setDevices((await deviceResponse.json()).devices || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load tracking dashboard");
@@ -475,8 +481,19 @@ export default function TrackingDashboard() {
   };
 
   useEffect(() => {
-    const savedToken = localStorage.getItem("billingTrackingToken") || "";
-    setAuthToken(savedToken);
+    let active = true;
+    void fetch("/api/auth/session", { credentials: "include" })
+      .then((response) => {
+        if (!response.ok) throw new Error("No session");
+        return response.json();
+      })
+      .then(() => {
+        if (active) setAuthToken(localStorage.getItem("billingTrackingToken") || "cookie-session");
+      })
+      .catch(() => {
+        if (active) setAuthToken(localStorage.getItem("billingTrackingToken") || "");
+      });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
@@ -490,9 +507,10 @@ export default function TrackingDashboard() {
   const apiRequest = async (url: string, init: RequestInit = {}) => {
     const response = await fetch(url, {
       ...init,
+      credentials: "include",
       headers: {
-        Authorization: `Bearer ${authToken}`,
         "Content-Type": "application/json",
+        ...authHeader,
         ...(init.headers || {}),
       },
     });
@@ -507,6 +525,7 @@ export default function TrackingDashboard() {
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(loginForm),
       });
       if (!response.ok) throw new Error("Invalid username or password");
@@ -524,12 +543,23 @@ export default function TrackingDashboard() {
     if (authToken) {
       await fetch("/api/auth/logout", {
         method: "POST",
-        headers: { Authorization: `Bearer ${authToken}` },
+        headers: authToken === "cookie-session" ? {} : { Authorization: `Bearer ${authToken}` },
+        credentials: "include",
       }).catch(() => null);
     }
     localStorage.removeItem("billingTrackingToken");
     setAuthToken("");
     setOverview(null);
+  };
+
+  const revokeDevice = async (device: DeviceStatus) => {
+    if (!window.confirm(`Revoke access for ${device.deviceName}?`)) return;
+    try {
+      await apiRequest(`/api/tracking/devices/${encodeURIComponent(device.deviceId)}?companyId=${encodeURIComponent(companyId)}`, { method: "DELETE" });
+      await loadOverview();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to revoke device");
+    }
   };
 
   const loadTokens = async () => {
@@ -573,7 +603,8 @@ export default function TrackingDashboard() {
       setBackupLoading(true);
       setError("");
       const response = await fetch("/api/tracking/backup", {
-        headers: { Authorization: `Bearer ${authToken}` },
+        credentials: "include",
+        headers: authHeader,
       });
       if (!response.ok) throw new Error(await response.text());
       const blob = await response.blob();
@@ -1082,12 +1113,13 @@ export default function TrackingDashboard() {
             {devices.length ? devices.map((device) => (
               <div className="list-row" key={device.deviceId}>
                 <span>
-                  <strong>{device.deviceId}</strong>
-                  <small>Last seen {formatDate(device.lastSeenAt)} · {device.batches} sync batches · {device.accepted} records accepted</small>
+                  <strong>{device.deviceName}</strong>
+                  <small>{device.deviceId} · Last seen {formatDate(device.lastSeenAt)} · {device.batches} sync batches · {device.accepted} records accepted</small>
                 </span>
                 <div className="row-actions">
                   <em className={device.status === "online" ? "status-online" : "status-offline"}>{device.status}</em>
                   <small>{device.rejected ? `${device.rejected} rejected` : "No rejected records"}</small>
+                  {device.status !== "revoked" && <button className="danger-link" onClick={() => void revokeDevice(device)}>Revoke</button>}
                 </div>
               </div>
             )) : <EmptyState text="No device heartbeat received yet. Open the POS and press Push Now in Settings → Data Backup." />}

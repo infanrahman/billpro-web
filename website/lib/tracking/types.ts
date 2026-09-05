@@ -166,6 +166,7 @@ export interface AuditEntry {
 
 export interface SyncPushPayload {
   deviceId: string;
+  deviceName?: string;
   batchId: string;
   scope: Scope;
   changes: Partial<Record<TrackingEntity, BaseRecord[]>>;

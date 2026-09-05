@@ -13,5 +13,5 @@ export async function GET(request: Request) {
   if (!companyId || !canUseScope(principal, companyId, branchId)) return forbidden("Scope is outside this user's companies or branches");
   const devices = await trackingRepository.getDeviceStatuses(companyId, branchId);
   const now = Date.now();
-  return json({ devices: devices.map((device) => ({ ...device, status: now - new Date(device.lastSeenAt).getTime() < 10 * 60 * 1000 ? "online" : "offline" })) });
+  return json({ devices: devices.map((device) => ({ ...device, status: device.revokedAt ? "revoked" : (now - new Date(device.lastSeenAt).getTime() < 10 * 60 * 1000 ? "online" : "offline") })) });
 }

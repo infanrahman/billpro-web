@@ -58,7 +58,9 @@ const endpointKey = 'webTrackingEndpoint';
 const tokenKey = 'webTrackingToken';
 const lastSyncKey = 'webTrackingLastSyncAt';
 const deviceIdKey = 'webTrackingDeviceId';
+const deviceNameKey = 'webTrackingDeviceName';
 const autoSyncKey = 'webTrackingAutoSyncEnabled';
+const syncFingerprintKey = 'webTrackingSyncFingerprint';
 
 // The desktop build cannot infer the URL of a hosted tracker. Set
 // VITE_WEB_TRACKING_URL at build time, while retaining localhost for local use.
@@ -123,6 +125,14 @@ const getDeviceId = () => {
     return generated;
 };
 
+const getDeviceName = () => {
+    const saved = localStorage.getItem(deviceNameKey);
+    if (saved) return saved;
+    const generated = `POS-${getDeviceId().slice(-6).toUpperCase()}`;
+    localStorage.setItem(deviceNameKey, generated);
+    return generated;
+};
+
 export const getWebTrackingConfig = (): WebTrackingConfig => ({
     endpoint: localStorage.getItem(endpointKey) || defaultEndpoint,
     token: localStorage.getItem(tokenKey) || defaultToken,
@@ -131,10 +141,24 @@ export const getWebTrackingConfig = (): WebTrackingConfig => ({
 });
 
 export const saveWebTrackingConfig = (config: Pick<WebTrackingConfig, 'endpoint' | 'token'> & Partial<Pick<WebTrackingConfig, 'autoSyncEnabled'>>) => {
-    localStorage.setItem(endpointKey, normaliseEndpoint(config.endpoint || defaultEndpoint));
-    localStorage.setItem(tokenKey, config.token || defaultToken);
+    const endpoint = normaliseEndpoint(config.endpoint || defaultEndpoint);
+    const token = (config.token || defaultToken).trim();
+    const fingerprint = `${endpoint}|${token}`;
+    localStorage.setItem(endpointKey, endpoint);
+    localStorage.setItem(tokenKey, token);
+    // A new endpoint/token pair has never received this POS's data. Reset the
+    // incremental cursor so the first automatic sync uploads the full dataset.
+    if (localStorage.getItem(syncFingerprintKey) !== fingerprint) {
+        localStorage.removeItem(lastSyncKey);
+    }
     if (typeof config.autoSyncEnabled === 'boolean') {
         localStorage.setItem(autoSyncKey, String(config.autoSyncEnabled));
+    }
+
+    // A newly saved endpoint/token should be tested immediately. The queued
+    // sync is intentionally non-blocking so the settings form remains usable.
+    if (config.autoSyncEnabled !== false) {
+        queueWebTrackingSync(500);
     }
 };
 
@@ -182,6 +206,7 @@ export const pushWebTrackingChanges = async (
         },
         body: JSON.stringify({
             deviceId: getDeviceId(),
+            deviceName: getDeviceName(),
             batchId: globalThis.crypto?.randomUUID?.() || `batch-${Date.now()}`,
             scope: {
                 companyId: getCurrentCompanyId(),
@@ -200,6 +225,7 @@ export const pushWebTrackingChanges = async (
 
     const result = (await response.json()) as WebTrackingPushResult;
     localStorage.setItem(lastSyncKey, result.serverTime);
+    localStorage.setItem(syncFingerprintKey, `${endpoint}|${config.token || defaultToken}`);
     return result;
 };
 

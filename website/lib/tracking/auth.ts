@@ -46,6 +46,14 @@ export const createPasswordHash = (password: string) => {
 
 const createTokenValue = () => `bt_${randomBytes(32).toString("hex")}`;
 
+export const sessionCookieName = "billing_tracking_session";
+
+const cookieValue = (request: Request, name: string) => {
+  const cookies = request.headers.get("cookie") || "";
+  const match = cookies.split(";").map((item) => item.trim()).find((item) => item.startsWith(`${name}=`));
+  return match ? decodeURIComponent(match.slice(name.length + 1)) : "";
+};
+
 const userToPrincipal = (user: UserRecord): TrackingPrincipal => ({
   id: user.id,
   name: user.name,
@@ -92,7 +100,9 @@ export const login = async (username: string, password: string) => {
 
 export const authenticate = async (request: Request): Promise<TrackingPrincipal | null> => {
   const header = request.headers.get("authorization");
-  const token = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined;
+  const token = header?.startsWith("Bearer ")
+    ? header.slice("Bearer ".length)
+    : cookieValue(request, sessionCookieName);
   if (!token) return null;
 
   if (trackingConfig.bootstrapEnabled && token === "demo-owner-token") return bootstrapUsers.owner.principal;
