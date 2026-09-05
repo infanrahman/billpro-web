@@ -60,8 +60,10 @@ const lastSyncKey = 'webTrackingLastSyncAt';
 const deviceIdKey = 'webTrackingDeviceId';
 const autoSyncKey = 'webTrackingAutoSyncEnabled';
 
-const defaultEndpoint = 'http://127.0.0.1:3000';
-const defaultToken = 'demo-owner-token';
+// The desktop build cannot infer the URL of a hosted tracker. Set
+// VITE_WEB_TRACKING_URL at build time, while retaining localhost for local use.
+const defaultEndpoint = (import.meta.env.VITE_WEB_TRACKING_URL || 'http://127.0.0.1:3000').trim();
+const defaultToken = (import.meta.env.VITE_WEB_TRACKING_TOKEN || 'demo-owner-token').trim();
 
 const syncSources: SyncSource[] = [
     { entity: 'companies', table: db.companies },
@@ -171,20 +173,6 @@ export const pushWebTrackingChanges = async (
     const config = { ...getWebTrackingConfig(), ...overrides };
     const endpoint = normaliseEndpoint(config.endpoint || defaultEndpoint);
     const changes = await collectWebTrackingChanges(config.lastSyncAt);
-    const totalChanges = Object.values(changes).reduce((sum, records) => sum + records.length, 0);
-
-    if (totalChanges === 0) {
-        const serverTime = new Date().toISOString();
-        localStorage.setItem(lastSyncKey, serverTime);
-        return {
-            batchId: '',
-            accepted: 0,
-            rejected: 0,
-            auditIds: [],
-            serverTime,
-        } satisfies WebTrackingPushResult;
-    }
-
     const response = await fetch(`${endpoint}/api/sync/push`, {
         method: 'POST',
         headers: {
@@ -198,6 +186,8 @@ export const pushWebTrackingChanges = async (
                 companyId: getCurrentCompanyId(),
                 branchId: getCurrentBranchId(),
             },
+            // Empty batches are intentional: they act as a device heartbeat and
+            // let the web dashboard show that this POS is still connected.
             changes,
         }),
     });
@@ -301,4 +291,5 @@ export const enableAutomaticWebTrackingSync = () => {
 
     window.addEventListener('online', () => queueWebTrackingSync(1000));
     queueWebTrackingSync(8000);
+    window.setInterval(() => queueWebTrackingSync(0), 5 * 60 * 1000);
 };

@@ -10,7 +10,7 @@ export async function POST(request: Request) {
   if (!can(principal, "sales.sync")) return forbidden("Missing sync permission");
 
   const payload = (await request.json().catch(() => null)) as SyncPushPayload | null;
-  if (!payload?.deviceId || !payload.batchId || !payload.scope?.companyId || !payload.changes) {
+  if (!payload?.deviceId || !payload.batchId || !payload.scope?.companyId || !payload.changes || typeof payload.changes !== "object") {
     return badRequest("Expected deviceId, batchId, scope.companyId, and changes");
   }
 

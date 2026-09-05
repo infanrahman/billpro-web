@@ -24,6 +24,7 @@ import {
   Store,
   UsersRound,
   WalletCards,
+  Wifi,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -266,6 +267,17 @@ type BranchHealthRecord = {
   transactionCount: number;
 };
 
+type DeviceStatus = {
+  deviceId: string;
+  branchId?: string;
+  lastSeenAt: string;
+  lastBatchId: string;
+  accepted: number;
+  rejected: number;
+  batches: number;
+  status: "online" | "offline";
+};
+
 const defaultCompanyId = "11111111-1111-1111-1111-111111111111";
 
 const entityIcons: Record<string, LucideIcon> = {
@@ -407,6 +419,7 @@ export default function TrackingDashboard() {
   const [creatingToken, setCreatingToken] = useState(false);
   const [tokenCopied, setTokenCopied] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [devices, setDevices] = useState<DeviceStatus[]>([]);
   const [companyId, setCompanyId] = useState(defaultCompanyId);
   const [branchId, setBranchId] = useState("");
   const [query, setQuery] = useState("");
@@ -452,6 +465,8 @@ export default function TrackingDashboard() {
       });
       if (!response.ok) throw new Error(await response.text());
       setOverview(await response.json());
+      const deviceResponse = await fetch(`/api/tracking/devices?${params.toString()}`, { headers: { Authorization: `Bearer ${authToken}` } });
+      if (deviceResponse.ok) setDevices((await deviceResponse.json()).devices || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load tracking dashboard");
     } finally {
@@ -940,8 +955,8 @@ export default function TrackingDashboard() {
         </div>
 
         <nav className="nav-stack" aria-label="Dashboard sections">
-          {["Overview", "Companies", "Branches", "Users", "Master Data", "Transactions", "Entities", "Reports", "Audit", "Sync"].map((item, index) => {
-            const Icon = [BarChart3, Building2, Store, UsersRound, Boxes, WalletCards, Database, BarChart3, FileClock, Cloud][index];
+          {["Overview", "Devices", "Companies", "Branches", "Users", "Master Data", "Transactions", "Entities", "Reports", "Audit", "Sync"].map((item, index) => {
+            const Icon = [BarChart3, Wifi, Building2, Store, UsersRound, Boxes, WalletCards, Database, BarChart3, FileClock, Cloud][index];
             return (
               <a href={`#${item.toLowerCase().replace(" ", "-")}`} key={item}>
                 <Icon size={17} />
@@ -1053,6 +1068,30 @@ export default function TrackingDashboard() {
           <Metric icon={Landmark} label="Purchases" value={formatMoney(overview?.totals.purchases || 0)} />
           <Metric icon={Activity} label="Expenses" value={formatMoney(overview?.totals.expenses || 0)} />
           <Metric icon={Boxes} label="Low stock" value={`${overview?.totals.lowStock || 0}`} />
+        </section>
+
+        <section className="panel" id="devices">
+          <div className="panel-heading wide">
+            <div>
+              <span>Connected POS devices</span>
+              <h2>{devices.filter((device) => device.status === "online").length} online · {devices.length} known devices</h2>
+            </div>
+            <Wifi size={20} />
+          </div>
+          <div className="list-stack">
+            {devices.length ? devices.map((device) => (
+              <div className="list-row" key={device.deviceId}>
+                <span>
+                  <strong>{device.deviceId}</strong>
+                  <small>Last seen {formatDate(device.lastSeenAt)} · {device.batches} sync batches · {device.accepted} records accepted</small>
+                </span>
+                <div className="row-actions">
+                  <em className={device.status === "online" ? "status-online" : "status-offline"}>{device.status}</em>
+                  <small>{device.rejected ? `${device.rejected} rejected` : "No rejected records"}</small>
+                </div>
+              </div>
+            )) : <EmptyState text="No device heartbeat received yet. Open the POS and press Push Now in Settings → Data Backup." />}
+          </div>
         </section>
 
         <section className="split-layout">

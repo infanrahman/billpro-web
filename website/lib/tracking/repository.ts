@@ -316,6 +316,27 @@ export const trackingRepository = {
     };
   },
 
+  async getDeviceStatuses(companyId: string, branchId?: string) {
+    const db = getDatabase();
+    const rows = (branchId
+      ? db.prepare(`SELECT deviceId, companyId, branchId, data FROM sync_batches WHERE companyId = ? AND (branchId IS NULL OR branchId = '' OR branchId = ?) ORDER BY rowid DESC`).all(companyId, branchId)
+      : db.prepare("SELECT deviceId, companyId, branchId, data FROM sync_batches WHERE companyId = ? ORDER BY rowid DESC").all(companyId)) as Array<{ deviceId: string; companyId: string; branchId: string | null; data: string }>;
+    const devices = new Map<string, { deviceId: string; companyId: string; branchId?: string; lastSeenAt: string; lastBatchId: string; accepted: number; rejected: number; batches: number }>();
+    for (const row of rows) {
+      const batch = parseJson<SyncBatchRecord>(row.data, {} as SyncBatchRecord);
+      const current = devices.get(row.deviceId);
+      const seenAt = batch.serverTime || new Date(0).toISOString();
+      if (!current) {
+        devices.set(row.deviceId, { deviceId: row.deviceId, companyId: row.companyId, branchId: row.branchId || undefined, lastSeenAt: seenAt, lastBatchId: batch.batchId, accepted: batch.accepted || 0, rejected: batch.rejected || 0, batches: 1 });
+      } else {
+        current.accepted += batch.accepted || 0;
+        current.rejected += batch.rejected || 0;
+        current.batches += 1;
+      }
+    }
+    return [...devices.values()];
+  },
+
   async getRecord<TRecord extends BaseRecord>(entity: TrackingEntity, id: string) {
     const db = getDatabase();
     const row = db

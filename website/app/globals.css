@@ -79,6 +79,9 @@ a {
   position: sticky;
   top: 0;
   height: 100vh;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -220,6 +223,7 @@ a {
 }
 
 .workspace {
+  min-width: 0;
   width: min(1480px, 100%);
   padding: 26px;
 }
@@ -825,6 +829,7 @@ input:focus {
   .sidebar {
     position: static;
     height: auto;
+    overflow: visible;
   }
 
   .nav-stack {
