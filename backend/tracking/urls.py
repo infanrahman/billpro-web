@@ -27,5 +27,6 @@ urlpatterns = [
     path("auth/me/", me, name="me"),
     path("overview/", overview, name="overview"),
     path("sync/push/", sync_push, name="sync-push"),
+    path("sync/push", sync_push, name="sync-push-no-slash"),
     path("", include(router.urls)),
 ]
