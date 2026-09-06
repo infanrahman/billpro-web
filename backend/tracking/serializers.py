@@ -5,9 +5,25 @@ from .models import (
     AuditEntry,
     Branch,
     Company,
+    ActivityLog,
+    CashEntry,
+    CashParty,
+    Category,
     Customer,
+    CustomerPayment,
     Device,
+    Expense,
     InventoryItem,
+    Notification,
+    Purchase,
+    PurchaseItem,
+    PurchasePayment,
+    Sale,
+    SaleItem,
+    Scale,
+    ScaleSyncLog,
+    Shift,
+    Spreadsheet,
     Supplier,
     SyncedRecord,
     SyncBatch,
@@ -19,14 +35,14 @@ from .models import (
 class CompanySerializer(serializers.ModelSerializer):
     class Meta:
         model = Company
-        fields = ["id", "name", "legal_name", "vat_number", "status", "created_at", "updated_at"]
+        fields = ["id", "name", "legal_name", "vat_number", "cr_number", "email", "phone", "address", "country", "logo_url", "status", "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
 class BranchSerializer(serializers.ModelSerializer):
     class Meta:
         model = Branch
-        fields = ["id", "company", "name", "location", "is_master", "status", "created_at", "updated_at"]
+        fields = ["id", "company", "name", "location", "phone", "email", "gstin", "vat_no", "cr_no", "logo_url", "country", "tax_name", "tax_rate", "pincode", "terms", "is_master", "last_invoice_hash", "invoice_counter", "primary_title", "secondary_title", "status", "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
@@ -97,8 +113,9 @@ class InventoryItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = InventoryItem
         fields = [
-            "id", "company", "branch", "name", "barcode", "stock", "min_stock",
-            "sale_price", "purchase_price", "metadata", "created_at", "updated_at",
+            "id", "company", "branch", "name", "arabic_name", "barcode", "tax_type", "tax_rate",
+            "stock", "min_stock", "sale_price", "purchase_price", "location", "unit", "image", "item_code",
+            "category", "supplier", "metadata", "created_at", "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
@@ -106,14 +123,14 @@ class InventoryItemSerializer(serializers.ModelSerializer):
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
-        fields = ["id", "company", "branch", "name", "phone", "balance", "metadata", "created_at", "updated_at"]
+        fields = ["id", "company", "branch", "name", "phone", "email", "address", "vat_number", "total_spent", "balance", "credit_limit", "loyalty_points", "metadata", "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
 class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
         model = Supplier
-        fields = ["id", "company", "branch", "name", "phone", "balance", "metadata", "created_at", "updated_at"]
+        fields = ["id", "company", "branch", "name", "phone", "email", "location", "tax_number", "balance", "metadata", "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
@@ -174,3 +191,99 @@ class SyncBatchSerializer(serializers.ModelSerializer):
             "audit_ids", "server_time", "created_at",
         ]
         read_only_fields = fields
+
+
+class CategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Category
+        fields = "__all__"
+
+
+class SaleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Sale
+        fields = "__all__"
+
+
+class SaleItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SaleItem
+        fields = "__all__"
+
+
+class ExpenseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Expense
+        fields = "__all__"
+
+
+class PurchaseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Purchase
+        fields = "__all__"
+
+
+class PurchaseItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PurchaseItem
+        fields = "__all__"
+
+
+class CustomerPaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomerPayment
+        fields = "__all__"
+
+
+class PurchasePaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PurchasePayment
+        fields = "__all__"
+
+
+class CashPartySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CashParty
+        fields = "__all__"
+
+
+class CashEntrySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CashEntry
+        fields = "__all__"
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = "__all__"
+
+
+class ActivityLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ActivityLog
+        fields = "__all__"
+
+
+class SpreadsheetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Spreadsheet
+        fields = "__all__"
+
+
+class ShiftSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Shift
+        fields = "__all__"
+
+
+class ScaleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Scale
+        fields = "__all__"
+
+
+class ScaleSyncLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ScaleSyncLog
+        fields = "__all__"
