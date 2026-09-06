@@ -2,7 +2,7 @@
 # the repository instead of being configured with /backend as its root.
 [build]
 builder = "NIXPACKS"
-buildCommand = "pip install -r backend/requirements.txt"
+buildCommand = "python -m pip install -r backend/requirements.txt"
 
 [deploy]
 startCommand = "cd backend && python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn billing_api.wsgi:application --bind 0.0.0.0:$PORT"

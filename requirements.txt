@@ -1,0 +1,2 @@
+# Railway root-level detection for the Django service.
+-r backend/requirements.txt
