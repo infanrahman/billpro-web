@@ -171,7 +171,10 @@ export const collectWebTrackingChanges = async (lastSyncAt?: string | null) => {
                 (record): record is SyncableRecord => !!record && typeof record === 'object',
             );
             const changed = records
-                .filter((record) => recordUpdatedAt(record) > since)
+                // Branches are foundational scope records. Include every local
+                // branch during a full sync, even if it came from an older DB
+                // version without a usable updatedAt value.
+                .filter((record) => entity === 'branches' && !lastSyncAt ? true : recordUpdatedAt(record) > since)
                 .map((record) => {
                     const companyId = entity === 'companies'
                         ? String(record.companyId || record.id || getCurrentCompanyId())
