@@ -514,7 +514,10 @@ export default function TrackingDashboard() {
         ...(init.headers || {}),
       },
     });
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(typeof body?.error === "string" ? body.error : "Request failed");
+    }
     return response.json();
   };
 
@@ -715,11 +718,15 @@ export default function TrackingDashboard() {
     try {
       setSavingUser(true);
       setError("");
+      const companyIds = userForm.companyIds.length ? userForm.companyIds : [companyId];
+      const branchIds = userForm.branchIds.length
+        ? userForm.branchIds
+        : (overview?.branches || []).map((branch) => branch.id);
       await apiRequest("/api/tracking/users", {
         method: userForm.id ? "PUT" : "POST",
-        body: JSON.stringify(userForm),
+        body: JSON.stringify({ ...userForm, companyIds, branchIds }),
       });
-      setUserForm({ ...emptyUserForm, companyIds: [companyId], branchIds: branchId ? [branchId] : [] });
+      setUserForm({ ...emptyUserForm, companyIds: [companyId], branchIds: (overview?.branches || []).map((branch) => branch.id) });
       await loadOverview();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save user");
@@ -1332,7 +1339,7 @@ export default function TrackingDashboard() {
               </div>
 
               <div className="form-actions">
-                <button onClick={() => setUserForm({ ...emptyUserForm, companyIds: [companyId], branchIds: branchId ? [branchId] : [] })}>Clear</button>
+                <button onClick={() => setUserForm({ ...emptyUserForm, companyIds: [companyId], branchIds: (overview?.branches || []).map((branch) => branch.id) })}>Clear</button>
                 <button className="primary-action" onClick={() => void saveUser()} disabled={savingUser || !userForm.name.trim() || !userForm.username.trim() || (!userForm.id && !userForm.password.trim()) || !hasPermission(userForm.id ? "users.update" : "users.create")}>
                   {savingUser ? "Saving..." : userForm.id ? "Update User" : "Create User"}
                 </button>
