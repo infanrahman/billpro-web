@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { trackingConfig } from "./config";
+import { createPostgresTrackingRepository } from "./postgresRepository";
 import type {
   AuditEntry,
   AuthTokenRecord,
@@ -15,7 +16,7 @@ import type {
 
 type EntityTables = Partial<Record<TrackingEntity, Record<string, BaseRecord>>>;
 
-interface SyncBatchRecord extends SyncPushResult {
+export interface SyncBatchRecord extends SyncPushResult {
   deviceId: string;
   companyId: string;
   branchId?: string;
@@ -315,7 +316,7 @@ const appendAudit = (
   return entry;
 };
 
-export const trackingRepository = {
+const sqliteTrackingRepository = {
   async getRecords<TRecord extends BaseRecord>(entity: TrackingEntity) {
     const db = getDatabase();
     return db
@@ -628,3 +629,7 @@ export const trackingRepository = {
     }
   },
 };
+
+export const trackingRepository = trackingConfig.databaseUrl
+  ? createPostgresTrackingRepository(trackingConfig.databaseUrl)
+  : sqliteTrackingRepository;

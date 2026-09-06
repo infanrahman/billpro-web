@@ -13,6 +13,7 @@ export const trackingConfig = {
   appName: process.env.BILLING_TRACKING_APP_NAME || "Billing Pro Tracking",
   publicUrl: process.env.NEXT_PUBLIC_BILLING_TRACKING_URL || "http://127.0.0.1:3000",
   databasePath: resolveRuntimePath(process.env.BILLING_TRACKING_SQLITE_PATH, "tracking.sqlite"),
+  databaseUrl: process.env.BILLING_TRACKING_DATABASE_URL || process.env.DATABASE_URL || "",
   legacyJsonPath: resolveRuntimePath(process.env.BILLING_TRACKING_LEGACY_JSON_PATH, "tracking-db.json"),
   bootstrapEnabled: process.env.NODE_ENV !== "production" || truthy(process.env.BILLING_TRACKING_BOOTSTRAP_ENABLED),
   bootstrapOwnerPassword: process.env.BILLING_TRACKING_BOOTSTRAP_OWNER_PASSWORD || "owner123",
