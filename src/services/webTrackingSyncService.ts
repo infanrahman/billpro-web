@@ -210,7 +210,9 @@ export const pushWebTrackingChanges = async (
             batchId: globalThis.crypto?.randomUUID?.() || `batch-${Date.now()}`,
             scope: {
                 companyId: getCurrentCompanyId(),
-                branchId: getCurrentBranchId(),
+                // A POS can contain multiple branches. Send the company scope
+                // only so the server receives every local branch in one batch.
+                branchId: undefined,
             },
             // Empty batches are intentional: they act as a device heartbeat and
             // let the web dashboard show that this POS is still connected.

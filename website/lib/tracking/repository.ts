@@ -587,6 +587,10 @@ const sqliteTrackingRepository = {
             rejected += 1;
             continue;
           }
+          if (principal.role !== "owner" && record.branchId && !principal.branchIds.includes(record.branchId)) {
+            rejected += 1;
+            continue;
+          }
 
           insertEntity(db, entity, record);
           const audit = appendAudit(
