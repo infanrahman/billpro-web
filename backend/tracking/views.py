@@ -21,7 +21,7 @@ from .models import (
 )
 from .permissions import IsTrackingAdmin, has_branch_access, has_company_access
 from .serializers import (
-    ActivityLogSerializer, AuditEntrySerializer, BranchSerializer, CashEntrySerializer,
+    AccessTokenSerializer, ActivityLogSerializer, AuditEntrySerializer, BranchSerializer, CashEntrySerializer,
     CashPartySerializer, CategorySerializer, CompanySerializer, CustomerPaymentSerializer,
     CustomerSerializer, DeviceSerializer, ExpenseSerializer, InventoryItemSerializer,
     LoginSerializer, NotificationSerializer, PurchaseItemSerializer, PurchasePaymentSerializer,
