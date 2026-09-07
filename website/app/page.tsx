@@ -762,11 +762,13 @@ export default function TrackingDashboard() {
       },
     });
     if (!response.ok) {
-      const body = await response.json().catch(() => null);
+      const rawBody = await response.text().catch(() => "");
+      let body: any = null;
+      try { body = rawBody ? JSON.parse(rawBody) : null; } catch { body = null; }
       const fieldErrors = body && typeof body === "object"
         ? Object.entries(body).map(([field, value]) => `${field}: ${Array.isArray(value) ? value.join(", ") : String(value)}`).join("; ")
         : "";
-      throw new Error(typeof body?.error === "string" ? body.error : (typeof body?.detail === "string" ? body.detail : fieldErrors || "Request failed"));
+      throw new Error(typeof body?.error === "string" ? body.error : (typeof body?.detail === "string" ? body.detail : fieldErrors || rawBody || `Request failed (${response.status})`));
     }
     return response.json();
   };
@@ -839,7 +841,17 @@ export default function TrackingDashboard() {
       });
       setCreatedToken(result.token);
       setNewTokenName("Desktop sync token");
-      await loadTokens();
+      if (result.tokenRecord) {
+        const token = result.tokenRecord;
+        setTokens((current) => [{
+          id: String(token.id),
+          name: String(token.name),
+          createdAt: String(token.createdAt || token.created_at || new Date().toISOString()),
+          expiresAt: token.expiresAt || token.expires_at,
+          revokedAt: token.revokedAt || token.revoked_at,
+          lastUsedAt: token.lastUsedAt || token.last_used_at,
+        }, ...current.filter((item) => item.id !== String(token.id))]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to create access token");
     } finally {
