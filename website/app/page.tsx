@@ -763,7 +763,10 @@ export default function TrackingDashboard() {
     });
     if (!response.ok) {
       const body = await response.json().catch(() => null);
-      throw new Error(typeof body?.error === "string" ? body.error : "Request failed");
+      const fieldErrors = body && typeof body === "object"
+        ? Object.entries(body).map(([field, value]) => `${field}: ${Array.isArray(value) ? value.join(", ") : String(value)}`).join("; ")
+        : "";
+      throw new Error(typeof body?.error === "string" ? body.error : (typeof body?.detail === "string" ? body.detail : fieldErrors || "Request failed"));
     }
     return response.json();
   };

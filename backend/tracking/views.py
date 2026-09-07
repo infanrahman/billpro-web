@@ -430,7 +430,15 @@ def health(request):
 def login(request):
     payload = LoginSerializer(data=request.data)
     payload.is_valid(raise_exception=True)
-    user = authenticate(username=payload.validated_data["username"], password=payload.validated_data["password"])
+    login_name = payload.validated_data["username"].strip()
+    password = payload.validated_data["password"]
+    user = authenticate(username=login_name, password=password)
+    if not user:
+        user = TrackingUser.objects.filter(username__iexact=login_name).first()
+        if not user:
+            user = TrackingUser.objects.filter(email__iexact=login_name).first()
+        if user and not user.check_password(password):
+            user = None
     if not user or not user.is_active:
         return Response({"error": "Invalid username or password"}, status=status.HTTP_401_UNAUTHORIZED)
     raw_token = f"bt_{secrets.token_urlsafe(36)}"
