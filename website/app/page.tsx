@@ -614,6 +614,15 @@ export default function TrackingDashboard() {
   const hasPermission = (permission: string) =>
     overview?.principal.role === "owner" || Boolean(overview?.principal.permissions.includes(permission));
 
+  const permissionPreview = Object.entries(
+    userForm.permissions.reduce<Record<string, string[]>>((groups, permission) => {
+      const [section, action] = permission.split(".");
+      if (!section || !action) return groups;
+      groups[section] = [...(groups[section] || []), action];
+      return groups;
+    }, {}),
+  ).sort(([left], [right]) => left.localeCompare(right));
+
   const authHeader: Record<string, string> = authToken && authToken !== "cookie-session"
     ? { Authorization: `Bearer ${authToken}` }
     : {};
@@ -1604,6 +1613,25 @@ export default function TrackingDashboard() {
                       {permission}
                     </label>
                   ))}
+                </div>
+              </div>
+
+              <div className="permission-preview" aria-live="polite">
+                <div className="permission-preview-heading">
+                  <strong>Access preview</strong>
+                  <span>{userForm.permissions.length} actions</span>
+                </div>
+                <p>
+                  <b>{userForm.role}</b> can access {userForm.companyIds.length} compan{userForm.companyIds.length === 1 ? "y" : "ies"}
+                  {" "}and {userForm.branchIds.length} branch{userForm.branchIds.length === 1 ? "" : "es"}.
+                </p>
+                <div className="permission-preview-grid">
+                  {permissionPreview.length > 0 ? permissionPreview.map(([section, actions]) => (
+                    <span key={section}>
+                      <b>{section}</b>
+                      <small>{actions.join(" · ")}</small>
+                    </span>
+                  )) : <span className="empty-preview">No section permissions selected.</span>}
                 </div>
               </div>
 

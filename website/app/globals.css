@@ -804,6 +804,61 @@ input:focus {
   min-height: 14px;
 }
 
+.permission-preview {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #b8dfe1;
+  border-radius: 8px;
+  background: #f1fbfb;
+}
+
+.permission-preview-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.permission-preview-heading span {
+  color: var(--brand-dark);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.permission-preview p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.permission-preview-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.permission-preview-grid span {
+  display: grid;
+  gap: 2px;
+  min-width: 92px;
+  padding: 7px 9px;
+  border: 1px solid #cce9ea;
+  border-radius: 7px;
+  background: white;
+  font-size: 0.76rem;
+}
+
+.permission-preview-grid small {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.permission-preview-grid .empty-preview {
+  color: var(--muted);
+  font-style: italic;
+}
+
 .audit-row {
   gap: 10px;
   padding: 11px;
