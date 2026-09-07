@@ -281,7 +281,7 @@ type DeviceStatus = {
 
 const defaultCompanyId = "11111111-1111-1111-1111-111111111111";
 
-const remoteApiBase = (process.env.NEXT_PUBLIC_BILLING_API_URL || "").replace(/\/+$/, "");
+const remoteApiBase = (process.env.NEXT_PUBLIC_BILLING_API_URL || (process.env.NODE_ENV === "production" ? "https://billpro-web-production.up.railway.app/api" : "")).replace(/\/+$/, "");
 const usingRemoteApi = Boolean(remoteApiBase);
 const remoteUrl = (path: string) => `${remoteApiBase}/${path.replace(/^\/+/, "")}`;
 
