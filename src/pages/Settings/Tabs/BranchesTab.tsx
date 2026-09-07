@@ -5,7 +5,7 @@ import { useAuth } from '../../../contexts/AuthContext';
 import { useNotification } from '../../../contexts/NotificationContext';
 
 const BranchesTab: React.FC = () => {
-    const { activeCompanyId, canCreate, canUpdate, canDelete } = useAuth();
+    const { activeCompanyId, activeBranchId, canCreate, canUpdate, canDelete, switchBranch } = useAuth();
     const { addToast } = useNotification();
     const [companies, setCompanies] = useState<Company[]>([]);
     const [branches, setBranches] = useState<Branch[]>([]);
@@ -133,18 +133,80 @@ const BranchesTab: React.FC = () => {
             addToast('You do not have permission to delete branches.', 'error');
             return;
         }
-        if (branch.id === DEFAULT_BRANCH_ID) {
-            addToast('The default branch cannot be deleted.', 'error');
+
+        const replacement = branches.find(candidate =>
+            candidate.companyId === branch.companyId &&
+            candidate.id !== branch.id &&
+            candidate.status === 'active' &&
+            !candidate.deletedAt,
+        );
+        if (!replacement) {
+            addToast('Create another active branch before deleting the default branch.', 'error');
             return;
         }
 
-        await db.branches.update(branch.id, {
-            status: 'inactive',
-            deletedAt: new Date(),
-            updatedAt: new Date(),
+        const isProtectedBranch = branch.id === DEFAULT_BRANCH_ID;
+        const message = isProtectedBranch
+            ? `Delete the default branch and move its records to “${replacement.name}”?`
+            : `Delete branch “${branch.name}”?`;
+        if (!window.confirm(message)) return;
+
+        const now = new Date();
+        const scopedTables = [
+            db.items,
+            db.customers,
+            db.customerPayments,
+            db.invoices,
+            db.expenses,
+            db.purchases,
+            db.purchasePayments,
+            db.suppliers,
+            db.activityLogs,
+            db.notifications,
+            db.cashEntries,
+            db.cashParties,
+            db.spreadsheets,
+            db.scales,
+            db.categories,
+            db.scaleLogs,
+            db.shifts,
+        ];
+
+        await db.transaction('rw', [...scopedTables, db.users, db.branches], async () => {
+            for (const table of scopedTables as any[]) {
+                const records = await table.filter((record: any) => record.branchId === branch.id).toArray();
+                for (const record of records) {
+                    await table.update(record.id, { branchId: replacement.id, updatedAt: now });
+                }
+            }
+
+            const users = await db.users.toArray();
+            for (const user of users) {
+                const branchIds = Array.from(new Set([
+                    ...(user.branchIds || []).filter(id => id !== branch.id),
+                    ...(user.branchIds?.includes(branch.id) ? [replacement.id] : []),
+                ]));
+                const updates: Partial<typeof user> = {};
+                if (user.branchIds?.includes(branch.id)) updates.branchIds = branchIds;
+                if (user.defaultBranchId === branch.id) updates.defaultBranchId = replacement.id;
+                if (Object.keys(updates).length > 0) await db.users.update(user.id!, updates);
+            }
+
+            await db.branches.update(replacement.id, {
+                isMaster: branch.isMaster || replacement.isMaster,
+                updatedAt: now,
+            });
+            await db.branches.update(branch.id, {
+                status: 'inactive',
+                deletedAt: now,
+                updatedAt: now,
+            });
         });
-        addToast('Branch deleted.', 'success');
-        loadData();
+
+        if (activeBranchId === branch.id) await switchBranch(replacement.id);
+
+        addToast(isProtectedBranch ? `Default branch deleted. Records moved to ${replacement.name}.` : 'Branch deleted.', 'success');
+        await loadData();
     };
 
     return (
