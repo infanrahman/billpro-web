@@ -3,6 +3,7 @@ import { Building2, Edit2, Plus, Save, Trash2, X } from 'lucide-react';
 import { db, type Company, DEFAULT_COMPANY_ID } from '../../../services/db';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useNotification } from '../../../contexts/NotificationContext';
+import { queueWebTrackingSync } from '../../../services/webTrackingSyncService';
 
 const emptyCompany = {
     name: '',
@@ -100,23 +101,82 @@ const CompaniesTab: React.FC = () => {
             addToast('You do not have permission to delete companies.', 'error');
             return;
         }
-        if (company.id === DEFAULT_COMPANY_ID) {
-            addToast('The default company cannot be deleted.', 'error');
+        const replacement = await db.companies
+            .filter(candidate => candidate.id !== company.id && candidate.status === 'active' && !candidate.deletedAt)
+            .first();
+        if (!replacement) {
+            addToast('Create another active company before removing this company.', 'error');
             return;
         }
 
-        const branchCount = await db.branches.where('companyId').equals(company.id).count();
-        if (branchCount > 0) {
-            addToast('Move or delete this company branches first.', 'error');
-            return;
-        }
+        const now = new Date();
+        const companyScopedTables: any[] = [
+            db.items, db.customers, db.customerPayments, db.invoices, db.expenses,
+            db.purchases, db.purchasePayments, db.suppliers, db.activityLogs,
+            db.notifications, db.cashEntries, db.cashParties, db.spreadsheets,
+            db.scales, db.categories, db.scaleLogs, db.shifts,
+        ];
 
-        await db.companies.update(company.id, {
-            status: 'inactive',
-            deletedAt: new Date(),
-            updatedAt: new Date(),
+        await db.transaction('rw', [db.companies, db.branches, db.users, ...companyScopedTables], async () => {
+            const oldBranches = await db.branches.where('companyId').equals(company.id).toArray();
+            const oldBranchIds = new Set(oldBranches.map(branch => branch.id));
+            const replacementBranch = await db.branches
+                .filter(branch => branch.companyId === replacement.id && branch.status === 'active' && !branch.deletedAt)
+                .first();
+            const branchFallbackId = replacementBranch?.id || oldBranches[0]?.id;
+
+            for (const table of companyScopedTables) {
+                const records = await table.toArray();
+                const migrated = records.map((record: any) => {
+                    if (record.companyId !== company.id) return record;
+                    return {
+                        ...record,
+                        companyId: replacement.id,
+                        branchId: oldBranchIds.has(record.branchId) && branchFallbackId ? branchFallbackId : record.branchId,
+                        updatedAt: now,
+                    };
+                });
+                if (migrated.some((record: any, index: number) => record !== records[index])) {
+                    await table.bulkPut(migrated);
+                }
+            }
+
+            for (const branch of oldBranches) {
+                await db.branches.update(branch.id, {
+                    companyId: replacement.id,
+                    name: branch.name === 'Default Store' ? 'Main Branch' : branch.name,
+                    updatedAt: now,
+                });
+            }
+
+            const users = await db.users.toArray();
+            for (const user of users) {
+                if (!user.companyIds?.includes(company.id) && user.defaultCompanyId !== company.id) continue;
+                const companyIds = (user.companyIds || []).filter(id => id !== company.id);
+                const branchIds = (user.branchIds || []).filter(id => !oldBranchIds.has(id));
+                await db.users.update(user.id!, {
+                    companyIds: companyIds.length ? companyIds : [replacement.id],
+                    defaultCompanyId: user.defaultCompanyId === company.id ? replacement.id : user.defaultCompanyId,
+                    branchIds: branchIds.length ? branchIds : (replacementBranch ? [replacementBranch.id] : []),
+                    defaultBranchId: oldBranchIds.has(user.defaultBranchId || '') ? (replacementBranch?.id || branchFallbackId) : user.defaultBranchId,
+                    updatedAt: now,
+                });
+            }
+
+            await db.companies.update(company.id, {
+                status: 'inactive',
+                deletedAt: now,
+                updatedAt: now,
+            });
         });
-        addToast('Company deleted.', 'success');
+
+        localStorage.setItem('currentCompanyId', replacement.id);
+        const replacementBranch = await db.branches
+            .filter(branch => branch.companyId === replacement.id && branch.status === 'active' && !branch.deletedAt)
+            .first();
+        if (replacementBranch) localStorage.setItem('currentBranchId', replacementBranch.id);
+        queueWebTrackingSync(500);
+        addToast(company.id === DEFAULT_COMPANY_ID ? 'Default company removed and its data moved to the selected company.' : 'Company deleted.', 'success');
         loadCompanies();
     };
 

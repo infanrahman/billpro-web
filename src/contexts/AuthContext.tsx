@@ -69,8 +69,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     useEffect(() => {
         const ensureDefaultOrganization = async () => {
             const now = new Date();
-            const defaultCompany = await db.companies.get(DEFAULT_COMPANY_ID);
-            if (!defaultCompany) {
+            const activeCompanies = await db.companies
+                .filter(company => company.status === 'active' && !company.deletedAt)
+                .toArray();
+            if (activeCompanies.length === 0) {
                 await db.companies.add({
                     id: DEFAULT_COMPANY_ID,
                     name: 'Default Company',
@@ -80,10 +82,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     createdAt: now,
                     updatedAt: now,
                 });
+                activeCompanies.push(await db.companies.get(DEFAULT_COMPANY_ID) as any);
             }
 
-            const masterBranch = await db.branches.get(DEFAULT_BRANCH_ID);
-            if (!masterBranch) {
+            const selectedCompanyId = localStorage.getItem('currentCompanyId') || activeCompanies[0]?.id || DEFAULT_COMPANY_ID;
+            const selectedCompany = activeCompanies.find(company => company?.id === selectedCompanyId) || activeCompanies[0];
+            const masterBranch = await db.branches
+                .filter(branch => branch.companyId === selectedCompany?.id && branch.status === 'active' && !branch.deletedAt)
+                .first();
+            if (!masterBranch && selectedCompany?.id === DEFAULT_COMPANY_ID) {
                 await db.branches.add({
                     id: DEFAULT_BRANCH_ID,
                     companyId: DEFAULT_COMPANY_ID,
@@ -98,8 +105,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     updatedAt: now,
                     branchId: DEFAULT_BRANCH_ID
                 });
-            } else if (!masterBranch.companyId) {
-                await db.branches.update(masterBranch.id, { companyId: DEFAULT_COMPANY_ID });
             }
         };
 

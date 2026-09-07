@@ -65,6 +65,12 @@ def ensure_company(company_id, changes):
             "name": source.get("name") or source.get("legalName") or "POS Company",
             "legal_name": source.get("legalName", ""),
             "vat_number": source.get("vatNumber", ""),
+            "cr_number": source.get("crNumber", ""),
+            "email": source.get("email", ""),
+            "phone": source.get("phone", ""),
+            "address": source.get("address", ""),
+            "country": source.get("country", ""),
+            "logo_url": source.get("logoUrl", ""),
             "status": source.get("status", "active"),
         },
     )
@@ -72,6 +78,12 @@ def ensure_company(company_id, changes):
         "name": source.get("name"),
         "legal_name": source.get("legalName"),
         "vat_number": source.get("vatNumber"),
+        "cr_number": source.get("crNumber"),
+        "email": source.get("email"),
+        "phone": source.get("phone"),
+        "address": source.get("address"),
+        "country": source.get("country"),
+        "logo_url": source.get("logoUrl"),
         "status": source.get("status"),
     }
     changed = False
@@ -94,6 +106,14 @@ def ensure_branch(record, company):
             "company": company,
             "name": record.get("name") or "Unnamed branch",
             "location": record.get("location", ""),
+            "phone": record.get("phone", ""),
+            "email": record.get("email", ""),
+            "gstin": record.get("gstin", ""),
+            "vat_no": record.get("vatNo", record.get("vat_no", "")),
+            "cr_no": record.get("crNo", record.get("cr_no", "")),
+            "country": record.get("country", ""),
+            "tax_name": record.get("taxName", record.get("tax_name", "")),
+            "tax_rate": record.get("taxRate", record.get("tax_rate", 0)) or 0,
             "is_master": bool(record.get("isMaster", record.get("master", False))),
             "status": record.get("status", "active"),
         },
@@ -149,6 +169,12 @@ def materialize_record(entity, record, company, branch):
                 "name": record.get("name") or record.get("legalName") or "POS Company",
                 "legal_name": record.get("legalName", ""),
                 "vat_number": record.get("vatNumber", ""),
+                "cr_number": record.get("crNumber", ""),
+                "email": record.get("email", ""),
+                "phone": record.get("phone", ""),
+                "address": record.get("address", ""),
+                "country": record.get("country", ""),
+                "logo_url": record.get("logoUrl", ""),
                 "status": record.get("status", "active"),
             },
         )
@@ -468,8 +494,8 @@ def me(request):
 @permission_classes([IsAuthenticated])
 def overview(request):
     user = request.user
-    company_qs = Company.objects.all() if user.is_superuser else user.companies.all()
-    branch_qs = Branch.objects.filter(company__in=company_qs)
+    company_qs = (Company.objects.all() if user.is_superuser else user.companies.all()).filter(status="active")
+    branch_qs = Branch.objects.filter(company__in=company_qs, status="active")
     scoped = lambda qs: qs if user.is_superuser else qs.filter(company__in=company_qs)
     principal = {
         "id": str(user.id),

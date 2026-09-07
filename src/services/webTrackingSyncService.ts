@@ -115,6 +115,74 @@ const sanitizeRecord = (record: SyncableRecord) => {
     return safeRecord;
 };
 
+const dateOrNow = (value: unknown, fallback?: Date) => {
+    const date = value ? new Date(String(value)) : fallback;
+    return date && !Number.isNaN(date.getTime()) ? date : new Date();
+};
+
+const pullWebOrganization = async (endpoint: string, token: string) => {
+    const response = await fetch(`${normaliseEndpoint(endpoint)}/api/overview/`, {
+        headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error(`Organization pull failed with status ${response.status}`);
+    const payload = await response.json() as { companies?: Record<string, unknown>[]; branches?: Record<string, unknown>[] };
+
+    await db.transaction('rw', [db.companies, db.branches], async () => {
+        for (const remote of payload.companies || []) {
+            const id = String(remote.id || '');
+            if (!id) continue;
+            const existing = await db.companies.get(id);
+            await db.companies.put({
+                ...(existing || {}),
+                id,
+                name: String(remote.name || remote.legal_name || existing?.name || 'Unnamed company'),
+                legalName: String(remote.legal_name ?? remote.legalName ?? existing?.legalName ?? ''),
+                vatNumber: String(remote.vat_number ?? remote.vatNumber ?? existing?.vatNumber ?? ''),
+                crNumber: String(remote.cr_number ?? remote.crNumber ?? existing?.crNumber ?? ''),
+                email: String(remote.email ?? existing?.email ?? ''),
+                phone: String(remote.phone ?? existing?.phone ?? ''),
+                address: String(remote.address ?? existing?.address ?? ''),
+                country: String(remote.country ?? existing?.country ?? ''),
+                logoUrl: String(remote.logo_url ?? remote.logoUrl ?? existing?.logoUrl ?? ''),
+                status: remote.status === 'inactive' ? 'inactive' : 'active',
+                createdAt: existing?.createdAt || dateOrNow(remote.created_at ?? remote.createdAt),
+                updatedAt: dateOrNow(remote.updated_at ?? remote.updatedAt, existing?.updatedAt),
+            });
+        }
+
+        for (const remote of payload.branches || []) {
+            const id = String(remote.id || '');
+            const companyId = String(remote.company ?? remote.companyId ?? '');
+            if (!id || !companyId) continue;
+            const existing = await db.branches.get(id);
+            await db.branches.put({
+                ...(existing || {}),
+                id,
+                companyId,
+                name: String(remote.name || existing?.name || 'Unnamed branch'),
+                location: String(remote.location ?? existing?.location ?? ''),
+                phone: String(remote.phone ?? existing?.phone ?? ''),
+                email: String(remote.email ?? existing?.email ?? ''),
+                vatNo: String(remote.vat_no ?? remote.vatNo ?? existing?.vatNo ?? ''),
+                crNo: String(remote.cr_no ?? remote.crNo ?? existing?.crNo ?? ''),
+                gstin: String(remote.gstin ?? existing?.gstin ?? ''),
+                country: String(remote.country ?? existing?.country ?? ''),
+                taxName: String(remote.tax_name ?? remote.taxName ?? existing?.taxName ?? 'VAT'),
+                taxRate: Number(remote.tax_rate ?? remote.taxRate ?? existing?.taxRate ?? 0),
+                isMaster: Boolean(remote.is_master ?? remote.isMaster ?? existing?.isMaster ?? false),
+                status: remote.status === 'inactive' ? 'inactive' : 'active',
+                updatedAt: dateOrNow(remote.updated_at ?? remote.updatedAt, existing?.updatedAt),
+                branchId: existing?.branchId || id,
+            });
+        }
+    });
+
+    return {
+        companies: payload.companies?.length || 0,
+        branches: payload.branches?.length || 0,
+    };
+};
+
 const getDeviceId = () => {
     const saved = localStorage.getItem(deviceIdKey);
     if (saved) return saved;
@@ -235,6 +303,11 @@ export const pushWebTrackingChanges = async (
     const result = (await response.json()) as WebTrackingPushResult;
     localStorage.setItem(lastSyncKey, result.serverTime);
     localStorage.setItem(syncFingerprintKey, `${endpoint}|${config.token || defaultToken}`);
+    try {
+        await pullWebOrganization(endpoint, config.token || defaultToken);
+    } catch (error) {
+        console.warn('Web organization pull failed after push:', error);
+    }
     return result;
 };
 
