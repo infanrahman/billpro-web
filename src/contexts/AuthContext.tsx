@@ -22,6 +22,7 @@ interface AuthContextType {
     activeBranch: Branch | null;
     availableBranches: Branch[];
     login: (username: string, password: string) => Promise<boolean>;
+    resetAdminPassword: (newPassword: string) => Promise<string>;
     logout: () => void;
     switchCompany: (companyId: string) => Promise<void>;
     switchBranch: (branchId: string) => void;
@@ -305,6 +306,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return false;
     };
 
+    const resetAdminPassword = async (newPassword: string): Promise<string> => {
+        const trimmedPassword = newPassword.trim();
+        if (trimmedPassword.length < 6) {
+            throw new Error('The new password must contain at least 6 characters.');
+        }
+
+        const adminUser = await db.users.where('role').equals('admin').first();
+        const salt = forge.util.encode64(forge.random.getBytesSync(16));
+        const derivedKey = forge.pkcs5.pbkdf2(trimmedPassword, salt, SECURE_ITERATIONS, 32, forge.md.sha256.create());
+        const passwordHash = forge.util.encode64(derivedKey);
+
+        if (adminUser?.id !== undefined) {
+            await db.users.update(adminUser.id, {
+                password: passwordHash,
+                salt,
+                isHashed: true,
+                iterations: SECURE_ITERATIONS,
+                forcePasswordChange: false,
+            });
+            return adminUser.username;
+        }
+
+        const username = 'admin';
+        await db.users.add({
+            ...createRecordMetadata(),
+            username,
+            password: passwordHash,
+            salt,
+            isHashed: true,
+            iterations: SECURE_ITERATIONS,
+            forcePasswordChange: false,
+            role: 'admin',
+            name: 'System Admin',
+            permissions: [],
+            companyIds: [DEFAULT_COMPANY_ID],
+            branchIds: [DEFAULT_BRANCH_ID],
+            defaultCompanyId: DEFAULT_COMPANY_ID,
+            defaultBranchId: DEFAULT_BRANCH_ID,
+        });
+        return username;
+    };
+
     const logout = () => {
         setUser(null);
         setToken(null);
@@ -394,6 +437,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             activeBranch,
             availableBranches,
             login,
+            resetAdminPassword,
             logout,
             switchCompany,
             switchBranch,

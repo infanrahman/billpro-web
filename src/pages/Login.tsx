@@ -5,13 +5,18 @@ import { Lock, User, ArrowRight, AlertCircle, ShieldCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 const Login: React.FC = () => {
-    const { login } = useAuth();
+    const { login, resetAdminPassword } = useAuth();
     const { t } = useTranslation();
     const navigate = useNavigate();
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
+    const [showRecovery, setShowRecovery] = useState(false);
+    const [recoveryPassword, setRecoveryPassword] = useState('');
+    const [recoveryConfirmation, setRecoveryConfirmation] = useState('');
+    const [recoveryError, setRecoveryError] = useState('');
+    const [recoveryMessage, setRecoveryMessage] = useState('');
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -31,37 +36,59 @@ const Login: React.FC = () => {
         }
     };
 
+    const handleRecovery = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setRecoveryError('');
+        setRecoveryMessage('');
+
+        if (recoveryConfirmation.trim().toUpperCase() !== 'RESET ADMIN') {
+            setRecoveryError('Type RESET ADMIN to confirm the local password reset.');
+            return;
+        }
+
+        try {
+            const username = await resetAdminPassword(recoveryPassword);
+            setRecoveryMessage(`Password updated for local admin account “${username}”. You can sign in now.`);
+            setRecoveryPassword('');
+            setRecoveryConfirmation('');
+        } catch (err: any) {
+            setRecoveryError(err.message || 'Unable to reset the local admin password.');
+        }
+    };
+
     return (
-        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 relative overflow-hidden">
-            {/* Background Decoration */}
+        <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 relative overflow-hidden">
+            {/* Dynamic Background */}
             <div className="absolute top-0 left-0 w-full h-full overflow-hidden z-0">
-                <div className="absolute -top-[30%] -right-[10%] w-[800px] h-[800px] bg-blue-100 rounded-full blur-3xl opacity-50" />
-                <div className="absolute -bottom-[20%] -left-[10%] w-[600px] h-[600px] bg-cyan-100 rounded-full blur-3xl opacity-50" />
+                <div className="absolute top-[-20%] right-[-10%] w-[900px] h-[900px] bg-blue-600/30 rounded-full blur-3xl opacity-50" />
+                <div className="absolute bottom-[-10%] left-[-5%] w-[700px] h-[700px] bg-cyan-500/20 rounded-full blur-3xl opacity-50" />
+                <div className="absolute top-[30%] left-[20%] w-[400px] h-[400px] bg-indigo-500/10 rounded-full blur-3xl opacity-50" />
             </div>
 
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl flex overflow-hidden relative z-10 border border-slate-100">
-
+            <div className="glass premium-shadow rounded-3xl w-full max-w-4xl flex overflow-hidden relative z-10 border border-white/20 animate-fade-in-up">
                 {/* Left Side - Hero / Brand */}
-                <div className="hidden md:flex flex-col justify-center w-1/2 bg-gradient-to-br from-blue-600 to-cyan-500 p-12 text-white relative">
-                    <div className="absolute top-0 left-0 w-full h-full bg-[url('/pattern-bg.png')] opacity-10 mix-blend-overlay"></div>
+                <div className="hidden md:flex flex-col justify-center w-1/2 premium-gradient p-12 text-white relative">
+                    <div className="absolute top-0 left-0 w-full h-full bg-[url('/pattern-bg.png')] opacity-5 mix-blend-overlay"></div>
                     <div className="relative z-10">
-                        <div className="mb-6 bg-white/10 w-16 h-16 rounded-2xl flex items-center justify-center backdrop-blur-sm border border-white/20">
-                            <ShieldCheck size={40} className="text-white" />
+                        <div className="mb-8 w-20 h-20 rounded-2xl flex items-center justify-center bg-white/10 backdrop-blur-md border border-white/20 shadow-xl">
+                            <ShieldCheck size={48} className="text-white" />
                         </div>
-                        <h1 className="text-4xl font-bold mb-4 font-sans tracking-tight">{t('login.brand_title')}</h1>
-                        <p className="text-blue-100 text-lg leading-relaxed opacity-90">
+                        <h1 className="text-5xl font-extrabold mb-6 font-sans tracking-tight leading-tight">
+                            {t('login.brand_title')}
+                        </h1>
+                        <p className="text-blue-50 text-xl leading-relaxed opacity-90 font-medium">
                             {t('login.brand_subtitle')}
                         </p>
 
-                        <div className="mt-12 flex items-center gap-3 text-sm font-medium text-blue-100 opacity-75">
-                            <div className="w-8 h-[1px] bg-blue-200"></div>
-                            <span>{t('login.secure_reliable')}</span>
+                        <div className="mt-16 flex items-center gap-4 text-sm font-semibold text-blue-100/80">
+                            <div className="w-12 h-[2px] bg-blue-300/50"></div>
+                            <span className="tracking-widest uppercase text-xs">{t('login.secure_reliable')}</span>
                         </div>
                     </div>
                 </div>
 
                 {/* Right Side - Login Form */}
-                <div className="w-full md:w-1/2 p-8 md:p-12 bg-white flex flex-col justify-center">
+                <div className="w-full md:w-1/2 p-8 md:p-14 bg-white/80 backdrop-blur-xl flex flex-col justify-center">
                     <div className="mb-8">
                         <h2 className="text-2xl font-bold text-slate-800 mb-2">{t('login.welcome_back')}</h2>
                         <p className="text-slate-500 text-sm">{t('login.signin_text')}</p>
@@ -124,6 +151,48 @@ const Login: React.FC = () => {
                             )}
                         </button>
                     </form>
+
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setShowRecovery((value) => !value);
+                            setRecoveryError('');
+                            setRecoveryMessage('');
+                        }}
+                        className="mt-5 text-sm font-semibold text-blue-600 hover:text-blue-700"
+                    >
+                        {showRecovery ? 'Cancel password recovery' : 'Forgot the local admin password?'}
+                    </button>
+
+                    {showRecovery && (
+                        <form onSubmit={handleRecovery} className="mt-4 space-y-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                            <p className="text-xs leading-relaxed text-amber-800">
+                                This resets only the local admin password. Your sales, inventory, customers, and settings will be preserved.
+                            </p>
+                            {recoveryError && <p className="text-xs font-semibold text-red-600">{recoveryError}</p>}
+                            {recoveryMessage && <p className="text-xs font-semibold text-emerald-700">{recoveryMessage}</p>}
+                            <input
+                                type="password"
+                                value={recoveryPassword}
+                                onChange={(e) => setRecoveryPassword(e.target.value)}
+                                placeholder="New password (6+ characters)"
+                                minLength={6}
+                                required
+                                className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-amber-500"
+                            />
+                            <input
+                                type="text"
+                                value={recoveryConfirmation}
+                                onChange={(e) => setRecoveryConfirmation(e.target.value)}
+                                placeholder="Type RESET ADMIN"
+                                required
+                                className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-amber-500"
+                            />
+                            <button type="submit" className="w-full rounded-lg bg-amber-600 px-3 py-2 text-sm font-bold text-white hover:bg-amber-700">
+                                Reset Local Admin Password
+                            </button>
+                        </form>
+                    )}
 
                     <div className="mt-8 text-center">
                         <p className="text-xs text-slate-400">
