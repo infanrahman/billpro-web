@@ -63,9 +63,10 @@ const autoSyncKey = 'webTrackingAutoSyncEnabled';
 const syncFingerprintKey = 'webTrackingSyncFingerprint';
 
 // The desktop build cannot infer the URL of a hosted tracker. Set
-// VITE_WEB_TRACKING_URL at build time, while retaining localhost for local use.
-const defaultEndpoint = (import.meta.env.VITE_WEB_TRACKING_URL || 'http://127.0.0.1:3000').trim();
+// VITE_WEB_TRACKING_URL at build time; Railway is the production fallback.
+const defaultEndpoint = (import.meta.env.VITE_WEB_TRACKING_URL || 'https://billpro-web-production.up.railway.app').trim();
 const defaultToken = (import.meta.env.VITE_WEB_TRACKING_TOKEN || 'demo-owner-token').trim();
+const legacyVercelEndpoint = 'https://billpro-web.vercel.app';
 
 const syncSources: SyncSource[] = [
     { entity: 'companies', table: db.companies },
@@ -134,7 +135,10 @@ const getDeviceName = () => {
 };
 
 export const getWebTrackingConfig = (): WebTrackingConfig => ({
-    endpoint: localStorage.getItem(endpointKey) || defaultEndpoint,
+    endpoint: (() => {
+        const saved = localStorage.getItem(endpointKey);
+        return saved && !saved.startsWith(legacyVercelEndpoint) ? saved : defaultEndpoint;
+    })(),
     token: localStorage.getItem(tokenKey) || defaultToken,
     lastSyncAt: localStorage.getItem(lastSyncKey),
     autoSyncEnabled: localStorage.getItem(autoSyncKey) !== 'false',
