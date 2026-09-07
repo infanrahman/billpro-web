@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import secrets
 import uuid
 
@@ -29,6 +30,9 @@ from .serializers import (
     SyncedRecordSerializer, SyncBatchSerializer, SyncPushSerializer, TrackingUserSerializer,
     TransactionSerializer,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def canonical_uuid(value):
@@ -490,6 +494,17 @@ def me(request):
     return Response(TrackingUserSerializer(request.user).data)
 
 
+def serialize_overview_rows(serializer_class, queryset, entity):
+    """Serialize overview rows independently so one legacy row cannot break the dashboard."""
+    rows = []
+    for instance in queryset:
+        try:
+            rows.append(serializer_class(instance).data)
+        except Exception:
+            logger.exception("Unable to serialize overview entity=%s id=%s", entity, getattr(instance, "pk", None))
+    return rows
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def overview(request):
@@ -544,13 +559,13 @@ def overview(request):
         "scaleLogs": ScaleSyncLogSerializer,
     }
     records = {
-        key: record_serializers[key](queryset, many=True).data
+        key: serialize_overview_rows(record_serializers[key], queryset, key)
         for key, queryset in record_sources.items()
     }
     return Response({
         "principal": principal,
-        "companies": CompanySerializer(company_qs, many=True).data,
-        "branches": BranchSerializer(branch_qs, many=True).data,
+        "companies": serialize_overview_rows(CompanySerializer, company_qs, "companies"),
+        "branches": serialize_overview_rows(BranchSerializer, branch_qs, "branches"),
         "counts": {
             "companies": company_qs.count(), "branches": branch_qs.count(),
             "users": TrackingUser.objects.filter(companies__in=company_qs).distinct().count(),
@@ -565,8 +580,8 @@ def overview(request):
             "scales": scoped(Scale.objects).count(), "scaleLogs": scoped(ScaleSyncLog.objects).count(),
             "transactions": scoped(Transaction.objects).count(), "syncedRecords": scoped(SyncedRecord.objects).count(),
         },
-        "devices": DeviceSerializer(scoped(Device.objects).order_by("-last_seen_at")[:50], many=True).data,
-        "recentAudit": AuditEntrySerializer(scoped(AuditEntry.objects).order_by("-created_at")[:50], many=True).data,
+        "devices": serialize_overview_rows(DeviceSerializer, scoped(Device.objects).order_by("-last_seen_at")[:50], "devices"),
+        "recentAudit": serialize_overview_rows(AuditEntrySerializer, scoped(AuditEntry.objects).order_by("-created_at")[:50], "audit"),
         "records": records,
     })
 
