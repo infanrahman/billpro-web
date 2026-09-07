@@ -281,6 +281,170 @@ type DeviceStatus = {
 
 const defaultCompanyId = "11111111-1111-1111-1111-111111111111";
 
+const remoteApiBase = (process.env.NEXT_PUBLIC_BILLING_API_URL || "").replace(/\/+$/, "");
+const usingRemoteApi = Boolean(remoteApiBase);
+const remoteUrl = (path: string) => `${remoteApiBase}/${path.replace(/^\/+/, "")}`;
+
+const asNumber = (value: unknown) => {
+  const result = Number(value);
+  return Number.isFinite(result) ? result : 0;
+};
+
+const camelize = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(camelize);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()),
+    camelize(item),
+  ]));
+};
+
+const normalizeRemoteRecord = (value: unknown, entity: string): Record<string, any> => {
+  const source = camelize(value) as Record<string, any>;
+  const record = { ...source };
+  if (source.company !== undefined) record.companyId = String(source.company);
+  if (source.branch !== undefined && source.branch !== null) record.branchId = String(source.branch);
+  if (source.updatedAt) record.updatedAt = String(source.updatedAt);
+  if (source.createdAt) record.createdAt = String(source.createdAt);
+  if (source.deletedAt) record.deletedAt = String(source.deletedAt);
+  if (entity === "companies") record.companyId = String(source.id);
+  if (entity === "users") {
+    record.name = source.name || source.username || "";
+    record.companyIds = (source.companyIds || []).map(String);
+    record.branchIds = (source.branchIds || []).map(String);
+    record.permissions = source.permissionsJson || source.permissions || [];
+    record.status = source.isActive === false ? "inactive" : "active";
+    record.companyId = record.companyIds[0];
+    record.branchId = record.branchIds[0];
+  }
+  return record;
+};
+
+const buildRemoteOverview = (payload: any, selectedCompanyId: string, selectedBranchId: string): Overview => {
+  const companies = (payload.companies || []).map((item: unknown) => normalizeRemoteRecord(item, "companies")) as CompanyRecord[];
+  const requestedCompanyId = companies.some((company) => company.id === selectedCompanyId)
+    ? selectedCompanyId
+    : companies[0]?.id || defaultCompanyId;
+  const allBranches = (payload.branches || []).map((item: unknown) => normalizeRemoteRecord(item, "branches")) as Record<string, any>[];
+  const branches = allBranches.filter((item) => String(item.companyId) === requestedCompanyId) as BranchRecord[];
+  const branch = branches.some((item) => item.id === selectedBranchId) ? selectedBranchId : "";
+  const rawRecords = payload.records || {};
+  const records = Object.fromEntries(Object.entries(rawRecords).map(([entity, rows]) => [
+    entity,
+    (rows as unknown[]).map((item) => normalizeRemoteRecord(item, entity)),
+  ])) as Record<string, Record<string, any>[]>;
+  const scoped = (entity: string) => (records[entity] || []).filter((record) =>
+    String(record.companyId || requestedCompanyId) === requestedCompanyId &&
+    (!branch || !record.branchId || String(record.branchId) === branch),
+  );
+  const sales = scoped("sales") as TransactionRecord[];
+  const purchases = scoped("purchases") as TransactionRecord[];
+  const expenses = scoped("expenses") as TransactionRecord[];
+  const inventory = scoped("inventory") as InventoryRecord[];
+  const amount = (record: Record<string, any>) => asNumber(record.grandTotal || record.totalAmount || record.amount || record.balance);
+  const title = (entity: string, record: Record<string, any>) => String(
+    record.name || record.invoiceNumber || record.orderNumber || record.description || `${entity} ${String(record.id).slice(0, 8)}`,
+  );
+  const entityNames = ["sales", "inventory", "categories", "customers", "suppliers", "purchases", "expenses", "cashbook", "cashParties", "customerPayments", "purchasePayments", "notifications", "scales", "scaleLogs", "spreadsheets", "shifts"];
+  const entities = entityNames.map((entity) => {
+    const scopedRecords = scoped(entity);
+    return {
+      entity,
+      count: scopedRecords.length,
+      latest: scopedRecords.slice().sort((a, b) => new Date(String(b.updatedAt || 0)).getTime() - new Date(String(a.updatedAt || 0)).getTime()).slice(0, 4).map((record) => ({
+        id: String(record.id),
+        title: title(entity, record),
+        amount: amount(record),
+        branchId: record.branchId,
+        updatedAt: String(record.updatedAt || new Date().toISOString()),
+      })),
+    };
+  });
+  const branchHealth = branches.map((item) => {
+    const branchSales = sales.filter((record) => !record.branchId || record.branchId === item.id);
+    const branchPurchases = purchases.filter((record) => !record.branchId || record.branchId === item.id);
+    const branchExpenses = expenses.filter((record) => !record.branchId || record.branchId === item.id);
+    const branchInventory = inventory.filter((record) => !record.branchId || record.branchId === item.id);
+    const paid = branchSales.reduce((sum, record) => sum + asNumber(record.paidAmount), 0);
+    const expenseTotal = branchExpenses.reduce((sum, record) => sum + asNumber(record.amount), 0);
+    return {
+      branchId: item.id,
+      branchName: item.name,
+      revenue: branchSales.reduce((sum, record) => sum + asNumber(record.grandTotal), 0),
+      paid,
+      outstanding: branchSales.reduce((sum, record) => sum + asNumber(record.remainingAmount), 0),
+      purchases: branchPurchases.reduce((sum, record) => sum + asNumber(record.totalAmount), 0),
+      expenses: expenseTotal,
+      estimatedCashProfit: paid - expenseTotal,
+      lowStock: branchInventory.filter((record) => asNumber(record.stock) <= asNumber(record.minStock)).length,
+      transactionCount: branchSales.length + branchPurchases.length + branchExpenses.length,
+    };
+  });
+  const remoteUser = payload.principal || {};
+  const principal = {
+    id: String(remoteUser.id || ""),
+    name: String(remoteUser.name || ""),
+    role: String(remoteUser.role || "owner"),
+    permissions: Array.isArray(remoteUser.permissions) ? remoteUser.permissions : [],
+  };
+  const audit = (payload.recentAudit || []).map((item: unknown) => {
+    const record = normalizeRemoteRecord(item, "audit");
+    return {
+      id: String(record.id),
+      actorName: String(record.actor || record.actorName || "System"),
+      entity: String(record.entity || "audit"),
+      action: String(record.action || "sync"),
+      timestamp: String(record.createdAt || record.timestamp || new Date().toISOString()),
+      recordId: record.recordId,
+    };
+  });
+  const deviceRecords = (payload.devices || []).map((item: any) => {
+    const record = normalizeRemoteRecord(item, "devices");
+    const lastSeenAt = String(record.lastSeenAt || new Date(0).toISOString());
+    return {
+      deviceId: String(record.deviceId || record.id),
+      deviceName: String(record.deviceName || record.deviceId || record.id),
+      branchId: record.branchId,
+      lastSeenAt,
+      lastBatchId: "",
+      accepted: asNumber(record.accepted),
+      rejected: asNumber(record.rejected),
+      batches: asNumber(record.batches),
+      status: record.revokedAt ? "revoked" : (Date.now() - new Date(lastSeenAt).getTime() < 10 * 60 * 1000 ? "online" : "offline"),
+    } as DeviceStatus;
+  });
+  return {
+    principal,
+    scope: { companyId: requestedCompanyId, branchId: branch || undefined },
+    companies,
+    branches,
+    users: scoped("users") as UserRecord[],
+    masterData: { inventory, customers: scoped("customers") as CustomerRecord[], suppliers: scoped("suppliers") as SupplierRecord[] },
+    transactions: {
+      sales,
+      purchases,
+      expenses,
+      cashbook: scoped("cashbook") as TransactionRecord[],
+      customerPayments: scoped("customerPayments") as TransactionRecord[],
+      purchasePayments: scoped("purchasePayments") as TransactionRecord[],
+    },
+    permissionCatalog: { roles: { owner: [], admin: [], manager: [], cashier: [], accountant: [], inventory: [] }, permissions: [] },
+    totals: {
+      sales: sales.reduce((sum, record) => sum + asNumber(record.grandTotal), 0),
+      paid: sales.reduce((sum, record) => sum + asNumber(record.paidAmount), 0),
+      outstanding: sales.reduce((sum, record) => sum + asNumber(record.remainingAmount), 0),
+      purchases: purchases.reduce((sum, record) => sum + asNumber(record.totalAmount), 0),
+      expenses: expenses.reduce((sum, record) => sum + asNumber(record.amount), 0),
+      lowStock: inventory.filter((record) => asNumber(record.stock) <= asNumber(record.minStock)).length,
+    },
+    branchHealth,
+    entities,
+    audit,
+    generatedAt: new Date().toISOString(),
+    remoteDevices: deviceRecords,
+  } as Overview & { remoteDevices: DeviceStatus[] };
+};
+
 const entityIcons: Record<string, LucideIcon> = {
   sales: ShoppingCart,
   inventory: Boxes,
@@ -410,7 +574,7 @@ const downloadCsv = (filename: string, rows: Array<Record<string, unknown>>) => 
 
 export default function TrackingDashboard() {
   const restoreInputRef = useRef<HTMLInputElement>(null);
-  const syncEndpoint = typeof window === "undefined" ? "http://127.0.0.1:3000" : window.location.origin;
+  const syncEndpoint = remoteApiBase || (typeof window === "undefined" ? "http://127.0.0.1:3000" : window.location.origin);
   const [authToken, setAuthToken] = useState("");
   const [loginForm, setLoginForm] = useState({ username: "owner", password: "owner123" });
   const [authLoading, setAuthLoading] = useState(false);
@@ -465,14 +629,21 @@ export default function TrackingDashboard() {
       setError("");
       const params = new URLSearchParams({ companyId });
       if (branchId) params.set("branchId", branchId);
-      const response = await fetch(`/api/tracking/overview?${params.toString()}`, {
+      const response = await fetch(usingRemoteApi ? remoteUrl("overview/") : `/api/tracking/overview?${params.toString()}`, {
         credentials: "include",
         headers: authHeader,
       });
       if (!response.ok) throw new Error(await response.text());
-      setOverview(await response.json());
-      const deviceResponse = await fetch(`/api/tracking/devices?${params.toString()}`, { credentials: "include", headers: authHeader });
-      if (deviceResponse.ok) setDevices((await deviceResponse.json()).devices || []);
+      const payload = await response.json();
+      if (usingRemoteApi) {
+        const remoteOverview = buildRemoteOverview(payload, companyId, branchId);
+        setOverview(remoteOverview);
+        setDevices((remoteOverview as Overview & { remoteDevices: DeviceStatus[] }).remoteDevices || []);
+      } else {
+        setOverview(payload);
+        const deviceResponse = await fetch(`/api/tracking/devices?${params.toString()}`, { credentials: "include", headers: authHeader });
+        if (deviceResponse.ok) setDevices((await deviceResponse.json()).devices || []);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load tracking dashboard");
     } finally {
@@ -482,17 +653,21 @@ export default function TrackingDashboard() {
 
   useEffect(() => {
     let active = true;
-    void fetch("/api/auth/session", { credentials: "include" })
-      .then((response) => {
-        if (!response.ok) throw new Error("No session");
-        return response.json();
-      })
-      .then(() => {
-        if (active) setAuthToken(localStorage.getItem("billingTrackingToken") || "cookie-session");
-      })
-      .catch(() => {
-        if (active) setAuthToken(localStorage.getItem("billingTrackingToken") || "");
-      });
+    if (usingRemoteApi) {
+      if (active) setAuthToken(localStorage.getItem("billingTrackingToken") || "");
+    } else {
+      void fetch("/api/auth/session", { credentials: "include" })
+        .then((response) => {
+          if (!response.ok) throw new Error("No session");
+          return response.json();
+        })
+        .then(() => {
+          if (active) setAuthToken(localStorage.getItem("billingTrackingToken") || "cookie-session");
+        })
+        .catch(() => {
+          if (active) setAuthToken(localStorage.getItem("billingTrackingToken") || "");
+        });
+    }
     return () => { active = false; };
   }, []);
 
@@ -505,8 +680,80 @@ export default function TrackingDashboard() {
   }, [authToken]);
 
   const apiRequest = async (url: string, init: RequestInit = {}) => {
-    const response = await fetch(url, {
-      ...init,
+    let requestUrl = url;
+    let requestInit = init;
+    if (usingRemoteApi) {
+      const parsed = new URL(url, window.location.origin);
+      const path = parsed.pathname.replace(/^\/api\/tracking\//, "");
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+      const routeMap: Record<string, string> = {
+        companies: "companies/",
+        branches: "branches/",
+        users: "users/",
+        inventory: "inventory/",
+        customers: "customers/",
+        suppliers: "suppliers/",
+        tokens: "tokens/",
+      };
+      const route = path.split("/")[0];
+      const recordId = parsed.searchParams.get("id") || body?.id;
+      if (route === "devices") {
+        const deviceId = path.split("/")[1];
+        requestUrl = remoteUrl(deviceId ? `devices/${encodeURIComponent(deviceId)}/` : "overview/");
+        if (deviceId && init.method === "DELETE") {
+          requestInit = { ...init, method: "PATCH", body: JSON.stringify({ revoked_at: new Date().toISOString() }) };
+        }
+      } else if (route === "tokens" && init.method === "DELETE") {
+        const tokenId = parsed.searchParams.get("id");
+        requestUrl = remoteUrl(`tokens/${encodeURIComponent(tokenId || "")}/`);
+      } else if (route === "transactions") {
+        const entity = String(body?.entity || parsed.searchParams.get("entity") || "transactions");
+        const entityRoute: Record<string, string> = {
+          sales: "sales/", purchases: "purchases/", expenses: "expenses/", cashbook: "cash-entries/",
+          customerPayments: "customer-payments/", purchasePayments: "purchase-payments/",
+        };
+        const collection = entityRoute[entity] || "transactions/";
+        requestUrl = remoteUrl(`${collection}${recordId && init.method === "DELETE" ? `${encodeURIComponent(recordId)}/` : ""}`);
+        if (init.method !== "DELETE" && body) {
+          const common = { id: body.id, company: body.companyId, branch: body.branchId };
+          const transactionBody: Record<string, any> = entity === "sales"
+            ? { ...common, invoice_number: body.invoiceNumber, customer_name: body.customerName, grand_total: body.grandTotal, paid_amount: body.paidAmount, remaining_amount: body.remainingAmount, payment_status: body.paymentStatus, status: body.status, payment_mode: body.paymentMode, invoice_type: body.type, notes: body.note }
+            : entity === "purchases"
+              ? { ...common, order_number: body.orderNumber, supplier_name: body.supplierName, total_amount: body.totalAmount, paid_amount: body.paidAmount, status: body.status, purchase_type: body.type, notes: body.note }
+              : entity === "expenses"
+                ? { ...common, description: body.description || body.primary, amount: body.amount, category: body.category, date: body.date }
+                : entity === "cashbook"
+                  ? { ...common, entry_type: body.type === "out" ? "out" : "in", amount: body.amount, category: body.category, description: body.description, date: body.date }
+                  : { ...common, amount: body.amount, date: body.date, reference: body.reference, note: body.note, payment_mode: body.paymentMode };
+          Object.keys(transactionBody).forEach((key) => transactionBody[key] === undefined || transactionBody[key] === "" ? delete transactionBody[key] : undefined);
+          requestInit = { ...requestInit, body: JSON.stringify(transactionBody) };
+        }
+      } else if (routeMap[route]) {
+        requestUrl = remoteUrl(`${routeMap[route]}${recordId && ["PUT", "PATCH", "DELETE"].includes(init.method || "") ? `${encodeURIComponent(recordId)}/` : ""}`);
+        if (recordId && init.method === "PUT") requestInit = { ...requestInit, method: "PATCH" };
+      } else {
+        requestUrl = remoteUrl(path);
+      }
+      if (body && typeof body === "object") {
+        const transformed = { ...body } as Record<string, any>;
+        const rename: Record<string, string> = {
+          companyId: "company", branchId: "branch", legalName: "legal_name", vatNumber: "vat_number",
+          isMaster: "is_master", minStock: "min_stock", salePrice: "sale_price", purchasePrice: "purchase_price",
+          totalSpent: "total_spent", companyIds: "company_ids", branchIds: "branch_ids", permissions: "permissions_json",
+        };
+        Object.entries(rename).forEach(([from, to]) => {
+          if (transformed[from] !== undefined) { transformed[to] = transformed[from]; delete transformed[from]; }
+        });
+        if (transformed.status !== undefined && route === "users") {
+          transformed.is_active = transformed.status !== "inactive";
+          delete transformed.status;
+        }
+        delete transformed.entity;
+        if (route !== "transactions") requestInit = { ...requestInit, body: JSON.stringify(transformed) };
+      }
+    }
+    const response = await fetch(requestUrl, {
+      ...requestInit,
       credentials: "include",
       headers: {
         "Content-Type": "application/json",
@@ -525,7 +772,7 @@ export default function TrackingDashboard() {
     try {
       setAuthLoading(true);
       setError("");
-      const response = await fetch("/api/auth/login", {
+      const response = await fetch(usingRemoteApi ? remoteUrl("auth/login/") : "/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -544,7 +791,7 @@ export default function TrackingDashboard() {
 
   const logout = async () => {
     if (authToken) {
-      await fetch("/api/auth/logout", {
+      await fetch(usingRemoteApi ? remoteUrl("auth/logout/") : "/api/auth/logout", {
         method: "POST",
         headers: authToken === "cookie-session" ? {} : { Authorization: `Bearer ${authToken}` },
         credentials: "include",
@@ -568,7 +815,14 @@ export default function TrackingDashboard() {
   const loadTokens = async () => {
     if (!authToken) return;
     const result = await apiRequest("/api/tracking/tokens");
-    setTokens(result.tokens || []);
+    setTokens((result.tokens || []).map((token: any) => ({
+      id: String(token.id),
+      name: String(token.name),
+      createdAt: String(token.createdAt || token.created_at),
+      expiresAt: token.expiresAt || token.expires_at,
+      revokedAt: token.revokedAt || token.revoked_at,
+      lastUsedAt: token.lastUsedAt || token.last_used_at,
+    })));
   };
 
   const createToken = async () => {

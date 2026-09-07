@@ -463,7 +463,58 @@ def overview(request):
     company_qs = Company.objects.all() if user.is_superuser else user.companies.all()
     branch_qs = Branch.objects.filter(company__in=company_qs)
     scoped = lambda qs: qs if user.is_superuser else qs.filter(company__in=company_qs)
+    principal = {
+        "id": str(user.id),
+        "name": user.display_name(),
+        "role": "owner" if user.is_superuser else user.role,
+        "permissions": user.permissions_json or [],
+    }
+    record_sources = {
+        "users": TrackingUser.objects.filter(companies__in=company_qs).distinct(),
+        "inventory": scoped(InventoryItem.objects.all()),
+        "categories": scoped(Category.objects.all()),
+        "customers": scoped(Customer.objects.all()),
+        "suppliers": scoped(Supplier.objects.all()),
+        "sales": scoped(Sale.objects.all()),
+        "purchases": scoped(Purchase.objects.all()),
+        "expenses": scoped(Expense.objects.all()),
+        "cashParties": scoped(CashParty.objects.all()),
+        "cashbook": scoped(CashEntry.objects.all()),
+        "customerPayments": scoped(CustomerPayment.objects.all()),
+        "purchasePayments": scoped(PurchasePayment.objects.all()),
+        "notifications": scoped(Notification.objects.all()),
+        "activityLogs": scoped(ActivityLog.objects.all()),
+        "spreadsheets": scoped(Spreadsheet.objects.all()),
+        "shifts": scoped(Shift.objects.all()),
+        "scales": scoped(Scale.objects.all()),
+        "scaleLogs": scoped(ScaleSyncLog.objects.all()),
+    }
+    record_serializers = {
+        "users": TrackingUserSerializer,
+        "inventory": InventoryItemSerializer,
+        "categories": CategorySerializer,
+        "customers": CustomerSerializer,
+        "suppliers": SupplierSerializer,
+        "sales": SaleSerializer,
+        "purchases": PurchaseSerializer,
+        "expenses": ExpenseSerializer,
+        "cashParties": CashPartySerializer,
+        "cashbook": CashEntrySerializer,
+        "customerPayments": CustomerPaymentSerializer,
+        "purchasePayments": PurchasePaymentSerializer,
+        "notifications": NotificationSerializer,
+        "activityLogs": ActivityLogSerializer,
+        "spreadsheets": SpreadsheetSerializer,
+        "shifts": ShiftSerializer,
+        "scales": ScaleSerializer,
+        "scaleLogs": ScaleSyncLogSerializer,
+    }
+    records = {
+        key: record_serializers[key](queryset, many=True).data
+        for key, queryset in record_sources.items()
+    }
     return Response({
+        "principal": principal,
         "companies": CompanySerializer(company_qs, many=True).data,
         "branches": BranchSerializer(branch_qs, many=True).data,
         "counts": {
@@ -482,7 +533,45 @@ def overview(request):
         },
         "devices": DeviceSerializer(scoped(Device.objects).order_by("-last_seen_at")[:50], many=True).data,
         "recentAudit": AuditEntrySerializer(scoped(AuditEntry.objects).order_by("-created_at")[:50], many=True).data,
+        "records": records,
     })
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def tokens(request):
+    if request.method == "GET":
+        queryset = AccessToken.objects.filter(user=request.user).order_by("-created_at")
+        return Response({"tokens": AccessTokenSerializer(queryset, many=True).data})
+
+    try:
+        days_valid = min(max(int(request.data.get("daysValid") or 90), 1), 365)
+    except (TypeError, ValueError):
+        days_valid = 90
+    raw_token = f"bt_{secrets.token_urlsafe(36)}"
+    access_token = AccessToken.objects.create(
+        user=request.user,
+        name=str(request.data.get("name") or "API token")[:180],
+        token_hash=hashlib.sha256(raw_token.encode()).hexdigest(),
+        expires_at=token_expiry(days_valid),
+    )
+    return Response({
+        "token": raw_token,
+        "tokenRecord": AccessTokenSerializer(access_token).data,
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def token_detail(request, token_id):
+    access_token = AccessToken.objects.filter(pk=token_id, user=request.user).first()
+    if not access_token:
+        return Response({"error": "Token was not found"}, status=status.HTTP_404_NOT_FOUND)
+    if getattr(request, "auth", None) and request.auth.pk == access_token.pk:
+        return Response({"error": "Use logout to revoke the active session token"}, status=status.HTTP_400_BAD_REQUEST)
+    access_token.revoked_at = timezone.now()
+    access_token.save(update_fields=["revoked_at", "updated_at"])
+    return Response({"ok": True})
 
 
 @api_view(["POST"])

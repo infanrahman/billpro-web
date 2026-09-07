@@ -8,6 +8,7 @@ from .views import (
     PurchasePaymentViewSet, PurchaseViewSet, SaleItemViewSet, SaleViewSet, ScaleSyncLogViewSet,
     ScaleViewSet, ShiftViewSet, SpreadsheetViewSet, SyncBatchViewSet, SyncedRecordViewSet,
     SupplierViewSet, TransactionViewSet, UserViewSet, health, login, logout, me, overview, sync_push,
+    token_detail, tokens,
 )
 
 router = DefaultRouter()
@@ -45,6 +46,8 @@ urlpatterns = [
     path("auth/logout/", logout, name="logout"),
     path("auth/me/", me, name="me"),
     path("overview/", overview, name="overview"),
+    path("tokens/", tokens, name="tokens"),
+    path("tokens/<uuid:token_id>/", token_detail, name="token-detail"),
     path("sync/push/", sync_push, name="sync-push"),
     path("sync/push", sync_push, name="sync-push-no-slash"),
     path("", include(router.urls)),
