@@ -66,9 +66,23 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-CORS_ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if origin.strip()]
+def _env_list(name):
+    return [item.strip() for item in os.getenv(name, "").split(",") if item.strip()]
+
+
+# Keep the production dashboard restricted to known Vercel origins while also
+# allowing deployment previews to authenticate against the same API.
+CORS_ALLOWED_ORIGINS = _env_list("CORS_ALLOWED_ORIGINS") or [
+    "https://billpro-web.vercel.app",
+]
+CORS_ALLOWED_ORIGIN_REGEXES = _env_list("CORS_ALLOWED_ORIGIN_REGEXES") or [
+    r"^https://billpro-[a-z0-9-]+\.alter18\.vercel\.app$",
+    r"^https://billpro-[a-z0-9-]+\.vercel\.app$",
+]
 CORS_ALLOW_CREDENTIALS = True
-CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if origin.strip()]
+CSRF_TRUSTED_ORIGINS = _env_list("CSRF_TRUSTED_ORIGINS") or [
+    "https://billpro-web.vercel.app",
+]
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SECURE_SSL_REDIRECT = DJANGO_SECURE
 SECURE_HSTS_SECONDS = 31536000 if DJANGO_SECURE else 0
