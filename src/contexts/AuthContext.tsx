@@ -237,24 +237,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const login = async (username: string, password: string): Promise<boolean> => {
         try {
-            const foundUser = await db.users.where('username').equalsIgnoreCase(username).first();
+            const foundUser = await db.users.where('username').equalsIgnoreCase(username.trim()).first();
             if (!foundUser) return false;
 
             let isValid = false;
             const currentIterations = foundUser.iterations || (foundUser.isHashed ? LEGACY_ITERATIONS : 0);
+            let matchedIterations = currentIterations;
 
             if (foundUser.isHashed && foundUser.salt) {
-                const derivedKey = forge.pkcs5.pbkdf2(password, foundUser.salt, currentIterations, 32, forge.md.sha256.create());
-                const hashAttempt = forge.util.encode64(derivedKey);
-                isValid = (foundUser.password === hashAttempt);
+                // Older installations may have a stale iteration count. Try the
+                // recorded format first, then the known legacy and current formats.
+                const iterationsToTry = Array.from(new Set([currentIterations, LEGACY_ITERATIONS, SECURE_ITERATIONS]));
+                for (const iterations of iterationsToTry) {
+                    const derivedKey = forge.pkcs5.pbkdf2(password, foundUser.salt, iterations, 32, forge.md.sha256.create());
+                    const hashAttempt = forge.util.encode64(derivedKey);
+                    if (foundUser.password === hashAttempt) {
+                        isValid = true;
+                        matchedIterations = iterations;
+                        break;
+                    }
+                }
+
+                // A previous build could mark an existing plain-text account as
+                // hashed. Accept it once and immediately migrate it securely.
+                if (!isValid && foundUser.password === password) {
+                    isValid = true;
+                    matchedIterations = 0;
+                }
             } else if (foundUser.password === password) {
                 // Raw password (unlikely but handled)
                 isValid = true;
+                matchedIterations = 0;
             }
 
             if (isValid) {
                 // Check if we need to upgrade hashing iterations
-                if (currentIterations < SECURE_ITERATIONS) {
+                if (matchedIterations < SECURE_ITERATIONS || !foundUser.isHashed || !foundUser.salt) {
                     const newSalt = forge.util.encode64(forge.random.getBytesSync(16));
                     const newDerivedKey = forge.pkcs5.pbkdf2(password, newSalt, SECURE_ITERATIONS, 32, forge.md.sha256.create());
                     const newHashedPassword = forge.util.encode64(newDerivedKey);
