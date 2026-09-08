@@ -4,8 +4,6 @@ import { trackingRepository } from "../../../../lib/tracking/repository";
 import type { CompanyRecord } from "../../../../lib/tracking/types";
 import { badRequest, forbidden, json, unauthorized } from "../../../../lib/tracking/responses";
 
-const defaultCompanyId = "11111111-1111-1111-1111-111111111111";
-
 const cleanText = (value: unknown) => (typeof value === "string" ? value.trim() : "");
 
 export async function POST(request: Request) {
@@ -64,7 +62,6 @@ export async function DELETE(request: Request) {
   const url = new URL(request.url);
   const id = cleanText(url.searchParams.get("id"));
   if (!id) return badRequest("Company id is required");
-  if (id === defaultCompanyId) return badRequest("The default company cannot be deleted");
   if (!canUseScope(principal, id)) return forbidden("Company is outside this user's scope");
 
   const deleted = await trackingRepository.softDeleteRecord(principal, "companies", id, id);

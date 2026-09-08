@@ -67,7 +67,7 @@ const MainLayout: React.FC = () => {
     const isPosPage = location.pathname === '/pos';
 
     return (
-        <div className="app-compact flex h-screen w-screen bg-slate-100 dark:bg-slate-950 overflow-hidden text-slate-900 dark:text-slate-100 selection:bg-blue-500/30">
+        <div className="app-compact orbit-app flex h-screen w-screen bg-slate-50 overflow-hidden text-slate-900 selection:bg-blue-500/30">
             <Sidebar 
                 isOpen={isSidebarOpen} 
                 onClose={() => setIsSidebarOpen(false)} 
@@ -81,14 +81,14 @@ const MainLayout: React.FC = () => {
             >
                 {/* Premium Header - Minimized for POS */}
                 <header className={clsx(
-                    "bg-white/90 dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800 px-3 md:px-4 flex items-center justify-between sticky top-0 z-30 transition-all duration-200",
+                    "orbit-header bg-white border-b border-slate-200 px-3 md:px-4 flex items-center justify-between sticky top-0 z-30 transition-all duration-200",
                     isPosPage ? "h-12" : "h-14"
                 )}>
                     <div className="flex items-center gap-3">
                         <button
                             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
                             className={clsx(
-                                "bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700 shadow-sm",
+                                "bg-white hover:bg-blue-50 rounded-lg text-slate-600 border border-slate-200 shadow-sm",
                                 "p-2"
                             )}
                         >
@@ -101,7 +101,7 @@ const MainLayout: React.FC = () => {
                                 <select
                                     value={activeCompanyId}
                                     onChange={(event) => switchCompany(event.target.value)}
-                                    className="h-9 min-w-40 max-w-52 appearance-none rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 pl-9 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-100 outline-none hover:bg-slate-50 dark:hover:bg-slate-700 focus:ring-2 focus:ring-blue-500/20"
+                                    className="h-9 min-w-40 max-w-52 appearance-none rounded-lg border border-slate-200 bg-white pl-9 pr-8 text-xs font-semibold text-slate-700 outline-none hover:bg-blue-50 focus:ring-2 focus:ring-blue-500/20"
                                     title="Active company"
                                 >
                                     {availableCompanies.map(company => (
@@ -118,7 +118,7 @@ const MainLayout: React.FC = () => {
                                 <select
                                     value={activeBranchId}
                                     onChange={(event) => switchBranch(event.target.value)}
-                                    className="h-9 min-w-36 max-w-48 appearance-none rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 pl-9 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-100 outline-none hover:bg-slate-50 dark:hover:bg-slate-700 focus:ring-2 focus:ring-blue-500/20"
+                                    className="h-9 min-w-36 max-w-48 appearance-none rounded-lg border border-slate-200 bg-white pl-9 pr-8 text-xs font-semibold text-slate-700 outline-none hover:bg-blue-50 focus:ring-2 focus:ring-blue-500/20"
                                     title="Active branch"
                                 >
                                     {availableBranches.map(branch => (
@@ -189,7 +189,7 @@ const MainLayout: React.FC = () => {
                 </header>
 
                 <main className={clsx(
-                    "flex-1 bg-[#f8fafc] dark:bg-[#020617] relative custom-scrollbar",
+                    "orbit-content flex-1 bg-slate-50 relative custom-scrollbar",
                     isPosPage ? "overflow-hidden flex flex-col" : "overflow-auto"
                 )}>
                     {/* Decorative background elements */}

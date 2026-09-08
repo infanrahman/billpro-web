@@ -279,8 +279,6 @@ type DeviceStatus = {
   status: "online" | "offline" | "revoked";
 };
 
-const defaultCompanyId = "11111111-1111-1111-1111-111111111111";
-
 const remoteApiBase = (process.env.NEXT_PUBLIC_BILLING_API_URL || (process.env.NODE_ENV === "production" ? "https://billpro-web-production.up.railway.app/api" : "")).replace(/\/+$/, "");
 const usingRemoteApi = Boolean(remoteApiBase);
 const remoteUrl = (path: string) => `${remoteApiBase}/${path.replace(/^\/+/, "")}`;
@@ -324,7 +322,7 @@ const buildRemoteOverview = (payload: any, selectedCompanyId: string, selectedBr
   const companies = (payload.companies || []).map((item: unknown) => normalizeRemoteRecord(item, "companies")) as CompanyRecord[];
   const requestedCompanyId = companies.some((company) => company.id === selectedCompanyId)
     ? selectedCompanyId
-    : companies[0]?.id || defaultCompanyId;
+    : companies[0]?.id || "";
   const allBranches = (payload.branches || []).map((item: unknown) => normalizeRemoteRecord(item, "branches")) as Record<string, any>[];
   const branches = allBranches.filter((item) => String(item.companyId) === requestedCompanyId) as BranchRecord[];
   const branch = branches.some((item) => item.id === selectedBranchId) ? selectedBranchId : "";
@@ -516,7 +514,7 @@ const emptyUserForm: UserForm = {
   username: "",
   name: "",
   role: "cashier",
-  companyIds: [defaultCompanyId],
+  companyIds: [],
   branchIds: [],
   permissions: [],
   status: "active",
@@ -576,16 +574,16 @@ export default function TrackingDashboard() {
   const restoreInputRef = useRef<HTMLInputElement>(null);
   const syncEndpoint = remoteApiBase || (typeof window === "undefined" ? "http://127.0.0.1:3000" : window.location.origin);
   const [authToken, setAuthToken] = useState("");
-  const [loginForm, setLoginForm] = useState({ username: "owner", password: "owner123" });
+  const [loginForm, setLoginForm] = useState({ username: "", password: "" });
   const [authLoading, setAuthLoading] = useState(false);
   const [tokens, setTokens] = useState<AuthToken[]>([]);
-  const [newTokenName, setNewTokenName] = useState("Desktop sync token");
+  const [newTokenName, setNewTokenName] = useState("");
   const [createdToken, setCreatedToken] = useState("");
   const [creatingToken, setCreatingToken] = useState(false);
   const [tokenCopied, setTokenCopied] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [devices, setDevices] = useState<DeviceStatus[]>([]);
-  const [companyId, setCompanyId] = useState(defaultCompanyId);
+  const [companyId, setCompanyId] = useState("");
   const [branchId, setBranchId] = useState("");
   const [query, setQuery] = useState("");
   const [activeEntity, setActiveEntity] = useState("all");
@@ -655,7 +653,8 @@ export default function TrackingDashboard() {
     try {
       setLoading(true);
       setError("");
-      const params = new URLSearchParams({ companyId });
+      const params = new URLSearchParams();
+      if (companyId) params.set("companyId", companyId);
       if (branchId) params.set("branchId", branchId);
       const response = await fetch(usingRemoteApi ? remoteUrl("overview/") : `/api/tracking/overview?${params.toString()}`, {
         credentials: "include",
@@ -1106,7 +1105,7 @@ export default function TrackingDashboard() {
     try {
       setError("");
       await apiRequest(`/api/tracking/companies?id=${encodeURIComponent(company.id)}`, { method: "DELETE" });
-      setCompanyId(defaultCompanyId);
+      setCompanyId("");
       setCompanyForm(emptyCompanyForm);
       await loadOverview();
     } catch (err) {
@@ -1257,7 +1256,7 @@ export default function TrackingDashboard() {
           <div>
             <p className="eyebrow"><ShieldCheck size={15} /> Secure dashboard</p>
             <h1>Sign in to Billing Pro Tracking</h1>
-            <p className="subtitle">Use your web tracking account. Bootstrap owner access is available for setup.</p>
+            <p className="subtitle">Sign in with your live tracking account to view synchronized POS data.</p>
           </div>
           {error && <div className="error-banner"><AlertTriangle size={18} /> {error}</div>}
           <label>
@@ -1272,7 +1271,6 @@ export default function TrackingDashboard() {
             <LockKeyhole size={17} />
             {authLoading ? "Signing in..." : "Sign In"}
           </button>
-          <small className="muted">Bootstrap: owner / owner123</small>
         </section>
       </main>
     );
@@ -1379,9 +1377,10 @@ export default function TrackingDashboard() {
           <label>
             Company
             <select value={companyId} onChange={(event) => setCompanyId(event.target.value)}>
-              {(overview?.companies.length ? overview.companies : [{ id: defaultCompanyId, name: "Default Company" }]).map((company) => (
+              {(overview?.companies || []).map((company) => (
                 <option value={company.id} key={company.id}>{company.name}</option>
               ))}
+              {!overview?.companies.length && <option value="">No companies available</option>}
             </select>
           </label>
           <label>
@@ -1443,12 +1442,12 @@ export default function TrackingDashboard() {
             <div className="panel-heading">
               <div>
                 <span>Companies</span>
-                <h2>{overview?.companies.length || 1} company profiles</h2>
+                <h2>{overview?.companies.length || 0} company profiles</h2>
               </div>
               <Building2 size={20} />
             </div>
             <div className="list-stack">
-              {(overview?.companies.length ? overview.companies : [{ id: defaultCompanyId, name: "Default Company", status: "active" }]).map((company) => (
+              {(overview?.companies || []).map((company) => (
                 <div className="list-row" key={company.id}>
                   <span>
                     <strong>{company.name}</strong>
@@ -1473,6 +1472,7 @@ export default function TrackingDashboard() {
                   </div>
                 </div>
               ))}
+              {!overview?.companies.length && <EmptyState text="No company records have been synced yet." />}
             </div>
             <div className="crud-form">
               <h3>{companyForm.id ? "Edit company" : "New company"}</h3>

@@ -33,7 +33,7 @@ Copy `.env.example` to `.env.local` for local overrides or configure the same va
 - `NEXT_PUBLIC_BILLING_TRACKING_URL`: public dashboard URL.
 - `BILLING_TRACKING_SQLITE_PATH`: SQLite database file path.
 - `BILLING_TRACKING_LEGACY_JSON_PATH`: optional old JSON backup path for one-time import.
-- `BILLING_TRACKING_BOOTSTRAP_ENABLED`: enable bootstrap owner/manager login in production only during first setup.
+- `BILLING_TRACKING_BOOTSTRAP_ENABLED`: opt in to bootstrap owner/manager login only during first setup.
 - `BILLING_TRACKING_BOOTSTRAP_OWNER_PASSWORD`: bootstrap owner password.
 - `BILLING_TRACKING_BOOTSTRAP_MANAGER_PASSWORD`: bootstrap manager password.
 

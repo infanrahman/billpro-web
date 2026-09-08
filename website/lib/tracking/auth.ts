@@ -2,20 +2,17 @@ import { createHash, randomBytes } from "node:crypto";
 import { trackingConfig } from "./config";
 import { trackingRepository } from "./repository";
 import { permissionsForRole } from "./permissions";
-import type { AuthTokenRecord, Permission, Role, TrackingPrincipal, UserRecord } from "./types";
-
-const defaultCompanyId = "11111111-1111-1111-1111-111111111111";
-const defaultBranchId = "00000000-0000-0000-0000-000000000000";
+import type { AuthTokenRecord, BranchRecord, CompanyRecord, Permission, Role, TrackingPrincipal, UserRecord } from "./types";
 
 const bootstrapUsers: Record<string, { password: string; principal: TrackingPrincipal }> = {
   owner: {
     password: trackingConfig.bootstrapOwnerPassword,
     principal: {
       id: "owner-demo",
-      name: "Owner Demo",
+      name: "Owner",
       role: "owner",
-      companyIds: [defaultCompanyId],
-      branchIds: [defaultBranchId],
+      companyIds: [],
+      branchIds: [],
       permissions: permissionsForRole("owner"),
     },
   },
@@ -23,10 +20,10 @@ const bootstrapUsers: Record<string, { password: string; principal: TrackingPrin
     password: trackingConfig.bootstrapManagerPassword,
     principal: {
       id: "manager-demo",
-      name: "Manager Demo",
+      name: "Manager",
       role: "manager",
-      companyIds: [defaultCompanyId],
-      branchIds: [defaultBranchId],
+      companyIds: [],
+      branchIds: [],
       permissions: permissionsForRole("manager"),
     },
   },
@@ -63,6 +60,19 @@ const userToPrincipal = (user: UserRecord): TrackingPrincipal => ({
   permissions: Array.from(new Set([...(permissionsForRole(user.role) || []), ...(user.permissions || [])])) as Permission[],
 });
 
+const resolveBootstrapPrincipal = async (principal: TrackingPrincipal) => {
+  if (principal.role === "owner") return principal;
+  const [companies, branches] = await Promise.all([
+    trackingRepository.getRecords<CompanyRecord>("companies"),
+    trackingRepository.getRecords<BranchRecord>("branches"),
+  ]);
+  return {
+    ...principal,
+    companyIds: companies.map((company) => company.id),
+    branchIds: branches.map((branch) => branch.id),
+  };
+};
+
 export const createManagedToken = async (principal: TrackingPrincipal, name = "Dashboard session", daysValid = 30) => {
   const tokenValue = createTokenValue();
   const now = new Date();
@@ -82,8 +92,9 @@ export const login = async (username: string, password: string) => {
   const normalizedUsername = username.trim().toLowerCase();
   const bootstrap = bootstrapUsers[normalizedUsername];
   if (trackingConfig.bootstrapEnabled && bootstrap && bootstrap.password === password) {
-    const { token, record } = await createManagedToken(bootstrap.principal, "Bootstrap dashboard session");
-    return { principal: bootstrap.principal, token, tokenRecord: record };
+    const principal = await resolveBootstrapPrincipal(bootstrap.principal);
+    const { token, record } = await createManagedToken(principal, "Dashboard session");
+    return { principal, token, tokenRecord: record };
   }
 
   const user = await trackingRepository.findRecordBy<UserRecord>(
@@ -105,14 +116,11 @@ export const authenticate = async (request: Request): Promise<TrackingPrincipal 
     : cookieValue(request, sessionCookieName);
   if (!token) return null;
 
-  if (trackingConfig.bootstrapEnabled && token === "demo-owner-token") return bootstrapUsers.owner.principal;
-  if (trackingConfig.bootstrapEnabled && token === "demo-manager-token") return bootstrapUsers.manager.principal;
-
   const tokenRecord = await trackingRepository.getAuthTokenByHash(hashSecret(token));
   if (!tokenRecord) return null;
 
   const bootstrapPrincipal = Object.values(bootstrapUsers).find((user) => user.principal.id === tokenRecord.userId)?.principal;
-  if (bootstrapPrincipal) return bootstrapPrincipal;
+  if (bootstrapPrincipal) return resolveBootstrapPrincipal(bootstrapPrincipal);
 
   const user = await trackingRepository.getRecord<UserRecord>("users", tokenRecord.userId);
   if (!user || user.status === "inactive") return null;

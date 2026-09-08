@@ -7,7 +7,6 @@ import type {
   AuditEntry,
   AuthTokenRecord,
   BaseRecord,
-  CompanyRecord,
   SyncPushPayload,
   SyncPushResult,
   TrackingEntity,
@@ -85,17 +84,6 @@ export interface TrackingBackup {
 const databasePath = trackingConfig.databasePath;
 const dataDir = path.dirname(databasePath);
 const legacyJsonPath = trackingConfig.legacyJsonPath;
-const defaultCompanyId = "11111111-1111-1111-1111-111111111111";
-
-const defaultCompany: CompanyRecord = {
-  id: defaultCompanyId,
-  companyId: defaultCompanyId,
-  name: "Default Company",
-  legalName: "Default Company",
-  status: "active",
-  updatedAt: new Date().toISOString(),
-};
-
 let database: DatabaseSync | null = null;
 
 const parseJson = <T>(value: string | null | undefined, fallback: T): T => {
@@ -281,11 +269,6 @@ const getDatabase = () => {
   `);
 
   migrateLegacyJson(database);
-
-  const existingCompany = database
-    .prepare("SELECT data FROM records WHERE entity = ? AND id = ? AND deletedAt IS NULL")
-    .get("companies", defaultCompanyId) as EntityRow | undefined;
-  if (!existingCompany) insertEntity(database, "companies", defaultCompany);
 
   return database;
 };
@@ -536,9 +519,12 @@ const sqliteTrackingRepository = {
       for (const batch of Object.values(backup.syncBatches || {})) insertBatch(db, batch);
       for (const token of Object.values(backup.authTokens || {})) insertToken(db, token);
 
-      appendAudit(db, principal, "backup", "restore", undefined, principal.companyIds[0] || defaultCompanyId, principal.branchIds[0], {
-        restoredAt: new Date().toISOString(),
-      });
+      const restoredCompanyId = principal.companyIds[0] || Object.values(backup.entities.companies || {})[0]?.id;
+      if (restoredCompanyId) {
+        appendAudit(db, principal, "backup", "restore", undefined, restoredCompanyId, principal.branchIds[0], {
+          restoredAt: new Date().toISOString(),
+        });
+      }
       db.exec("COMMIT");
       return { ok: true, restoredAt: new Date().toISOString() };
     } catch (error) {

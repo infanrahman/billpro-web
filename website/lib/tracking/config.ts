@@ -15,7 +15,7 @@ export const trackingConfig = {
   databasePath: resolveRuntimePath(process.env.BILLING_TRACKING_SQLITE_PATH, "tracking.sqlite"),
   databaseUrl: process.env.BILLING_TRACKING_DATABASE_URL || process.env.DATABASE_URL || "",
   legacyJsonPath: resolveRuntimePath(process.env.BILLING_TRACKING_LEGACY_JSON_PATH, "tracking-db.json"),
-  bootstrapEnabled: process.env.NODE_ENV !== "production" || truthy(process.env.BILLING_TRACKING_BOOTSTRAP_ENABLED),
-  bootstrapOwnerPassword: process.env.BILLING_TRACKING_BOOTSTRAP_OWNER_PASSWORD || "owner123",
-  bootstrapManagerPassword: process.env.BILLING_TRACKING_BOOTSTRAP_MANAGER_PASSWORD || "manager123",
+  bootstrapEnabled: truthy(process.env.BILLING_TRACKING_BOOTSTRAP_ENABLED),
+  bootstrapOwnerPassword: process.env.BILLING_TRACKING_BOOTSTRAP_OWNER_PASSWORD || "",
+  bootstrapManagerPassword: process.env.BILLING_TRACKING_BOOTSTRAP_MANAGER_PASSWORD || "",
 };

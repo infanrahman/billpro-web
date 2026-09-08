@@ -53,14 +53,14 @@ export async function GET(request: Request) {
   if (!canViewEntity(principal, "reports")) return forbidden("Missing reports.view permission");
 
   const url = new URL(request.url);
-  const requestedCompanyId = url.searchParams.get("companyId") || principal.companyIds[0];
+  const allCompanies = await trackingRepository.getRecords<CompanyRecord>("companies");
+  const requestedCompanyId = url.searchParams.get("companyId") || principal.companyIds[0] || allCompanies[0]?.id || "";
   const requestedBranchId = url.searchParams.get("branchId") || undefined;
 
   if (!canUseScope(principal, requestedCompanyId, requestedBranchId)) {
     return forbidden("Scope is outside this user's companies or branches");
   }
 
-  const allCompanies = await trackingRepository.getRecords<CompanyRecord>("companies");
   const companies = principal.role === "owner"
     ? allCompanies
     : allCompanies.filter((company) => principal.companyIds.includes(company.id));

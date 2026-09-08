@@ -89,18 +89,18 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
             />
 
             {/* Sidebar Panel */}
-            <div className="fixed inset-y-0 left-0 w-64 bg-[#101827] border-r border-slate-700/70 flex flex-col shadow-xl z-50 overflow-hidden">
+            <div className="fixed inset-y-0 left-0 w-64 bg-white border-r border-slate-200 flex flex-col shadow-xl z-50 overflow-hidden">
                 {/* Header */}
-                <div className="px-4 py-4 border-b border-slate-700/70 flex items-center justify-between gap-3">
+                <div className="px-4 py-4 border-b border-slate-200 flex items-center justify-between gap-3">
                     <div className="min-w-0">
-                        <h1 className="text-lg font-bold text-white leading-tight">
+                        <h1 className="text-lg font-bold text-slate-900 leading-tight">
                             BILLING PRO
                         </h1>
-                        <p className="text-sm text-slate-300 mt-1 font-medium truncate">{user?.name || role}</p>
+                        <p className="text-sm text-slate-500 mt-1 font-medium truncate">{user?.name || role}</p>
                     </div>
                     <button
                         onClick={onClose}
-                        className="shrink-0 p-2 hover:bg-slate-800 rounded-lg text-slate-300 hover:text-white"
+                        className="shrink-0 p-2 hover:bg-slate-100 rounded-lg text-slate-500 hover:text-blue-600"
                         aria-label="Close menu"
                     >
                         <X size={19} />
@@ -119,8 +119,8 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                             className={({ isActive }) => clsx(
                                 "relative flex items-center gap-3 px-3.5 h-11 rounded-lg outline-none group border",
                                 isActive
-                                    ? "bg-blue-600/25 text-white border-blue-400/45 shadow-sm"
-                                    : "text-slate-200 border-transparent hover:bg-slate-800 hover:text-white hover:border-slate-700"
+                                    ? "bg-blue-50 text-blue-700 border-blue-200 shadow-sm"
+                                    : "text-slate-600 border-transparent hover:bg-slate-50 hover:text-blue-700 hover:border-slate-200"
                             )}
                         >
                             {({ isActive }) => (
@@ -132,7 +132,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                                         size={20}
                                         className={clsx(
                                             "shrink-0",
-                                            isActive ? "text-blue-300" : "text-slate-300 group-hover:text-white"
+                                            isActive ? "text-blue-600" : "text-slate-400 group-hover:text-blue-600"
                                         )}
                                     />
                                     <span className="font-semibold text-[15px] leading-none truncate">
@@ -145,10 +145,10 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                 </nav>
 
                 {/* Logout */}
-                <div className="p-3 border-t border-slate-700/70 bg-[#0c1422]">
+                <div className="p-3 border-t border-slate-200 bg-slate-50">
                     <button
                         onClick={logout}
-                        className="flex items-center gap-3 px-3.5 h-11 w-full rounded-lg text-slate-200 hover:bg-red-500/15 hover:text-red-300 border border-transparent hover:border-red-400/30 group"
+                        className="flex items-center gap-3 px-3.5 h-11 w-full rounded-lg text-slate-600 hover:bg-red-50 hover:text-red-600 border border-transparent hover:border-red-200 group"
                     >
                         <LogOut size={20} className="shrink-0" />
                         <span className="font-semibold text-[15px]">{t('sidebar.logout')}</span>
