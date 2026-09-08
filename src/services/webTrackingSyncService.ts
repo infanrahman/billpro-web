@@ -60,6 +60,14 @@ export type WebTrackingConnectionResult = {
     users: number;
 };
 
+export type WebTrackingSyncStatus = {
+    lastSyncAt: string | null;
+    accepted: number;
+    rejected: number;
+    batchId: string | null;
+    error: string | null;
+};
+
 const endpointKey = 'webTrackingEndpoint';
 const tokenKey = 'webTrackingToken';
 const lastSyncKey = 'webTrackingLastSyncAt';
@@ -67,6 +75,8 @@ const deviceIdKey = 'webTrackingDeviceId';
 const deviceNameKey = 'webTrackingDeviceName';
 const autoSyncKey = 'webTrackingAutoSyncEnabled';
 const syncFingerprintKey = 'webTrackingSyncFingerprint';
+const lastSyncResultKey = 'webTrackingLastSyncResult';
+const lastSyncErrorKey = 'webTrackingLastSyncError';
 
 // The desktop build cannot infer the URL of a hosted tracker. Set
 // VITE_WEB_TRACKING_URL at build time; Railway is the production fallback.
@@ -218,6 +228,23 @@ export const getWebTrackingConfig = (): WebTrackingConfig => ({
     autoSyncEnabled: localStorage.getItem(autoSyncKey) !== 'false',
 });
 
+export const getWebTrackingSyncStatus = (): WebTrackingSyncStatus => {
+    const result = localStorage.getItem(lastSyncResultKey);
+    let parsed: Partial<WebTrackingSyncStatus> = {};
+    try {
+        parsed = result ? JSON.parse(result) as Partial<WebTrackingSyncStatus> : {};
+    } catch {
+        parsed = {};
+    }
+    return {
+        lastSyncAt: localStorage.getItem(lastSyncKey),
+        accepted: Number(parsed.accepted || 0),
+        rejected: Number(parsed.rejected || 0),
+        batchId: typeof parsed.batchId === 'string' ? parsed.batchId : null,
+        error: localStorage.getItem(lastSyncErrorKey),
+    };
+};
+
 export const saveWebTrackingConfig = (config: Pick<WebTrackingConfig, 'endpoint' | 'token'> & Partial<Pick<WebTrackingConfig, 'autoSyncEnabled'>>) => {
     const endpoint = normaliseEndpoint(config.endpoint || defaultEndpoint);
     const token = (config.token || defaultToken).trim();
@@ -301,35 +328,50 @@ export const pushWebTrackingChanges = async (
     const config = { ...getWebTrackingConfig(), ...overrides };
     const endpoint = normaliseEndpoint(config.endpoint || defaultEndpoint);
     const changes = await collectWebTrackingChanges(forceFullSync ? null : config.lastSyncAt);
-    const response = await fetch(`${endpoint}/api/sync/push`, {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${config.token || defaultToken}`,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            deviceId: getDeviceId(),
-            deviceName: getDeviceName(),
-            batchId: globalThis.crypto?.randomUUID?.() || `batch-${Date.now()}`,
-            scope: {
-                companyId: getCurrentCompanyId(),
-                // A POS can contain multiple branches. Send the company scope
-                // only so the server receives every local branch in one batch.
-                branchId: undefined,
+    let response: Response;
+    try {
+        response = await fetch(`${endpoint}/api/sync/push`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${config.token || defaultToken}`,
+                'Content-Type': 'application/json',
             },
-            // Empty batches are intentional: they act as a device heartbeat and
-            // let the web dashboard show that this POS is still connected.
-            changes,
-        }),
-    });
+            body: JSON.stringify({
+                deviceId: getDeviceId(),
+                deviceName: getDeviceName(),
+                batchId: globalThis.crypto?.randomUUID?.() || `batch-${Date.now()}`,
+                scope: {
+                    companyId: getCurrentCompanyId(),
+                    // A POS can contain multiple branches. Send the company scope
+                    // only so the server receives every local branch in one batch.
+                    branchId: undefined,
+                },
+                // Empty batches are intentional: they act as a device heartbeat and
+                // let the web dashboard show that this POS is still connected.
+                changes,
+            }),
+        });
+    } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to reach web tracking endpoint';
+        localStorage.setItem(lastSyncErrorKey, message);
+        throw error;
+    }
 
     if (!response.ok) {
         const message = await response.text().catch(() => '');
+        localStorage.setItem(lastSyncErrorKey, message || `Web tracking sync failed with status ${response.status}`);
         throw new Error(message || `Web tracking sync failed with status ${response.status}`);
     }
 
     const result = (await response.json()) as WebTrackingPushResult;
     localStorage.setItem(lastSyncKey, result.serverTime);
+    localStorage.setItem(lastSyncResultKey, JSON.stringify({
+        lastSyncAt: result.serverTime,
+        accepted: result.accepted,
+        rejected: result.rejected,
+        batchId: result.batchId,
+    }));
+    localStorage.removeItem(lastSyncErrorKey);
     localStorage.setItem(syncFingerprintKey, `${endpoint}|${config.token || defaultToken}`);
     try {
         await pullWebOrganization(endpoint, config.token || defaultToken);

@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { Download, Upload, Database, AlertTriangle, CheckCircle, Clock, Folder, Play, Cloud, RefreshCw, Save } from 'lucide-react';
 import { generateBackupData, restoreBackupData } from '../../../services/backupService';
-import { getWebTrackingConfig, pushWebTrackingChanges, saveWebTrackingConfig, testWebTrackingConnection } from '../../../services/webTrackingSyncService';
+import { getWebTrackingConfig, getWebTrackingSyncStatus, pushWebTrackingChanges, saveWebTrackingConfig, testWebTrackingConnection } from '../../../services/webTrackingSyncService';
 import { useNotification } from '../../../contexts/NotificationContext';
 import { useTranslation } from 'react-i18next';
 import ConfirmationModal from '../../../components/UI/ConfirmationModal';
@@ -34,6 +34,7 @@ const DataBackupTab: React.FC = () => {
     const [webTrackingLoading, setWebTrackingLoading] = useState(false);
     const [webTrackingTesting, setWebTrackingTesting] = useState(false);
     const [webTrackingTestResult, setWebTrackingTestResult] = useState<string | null>(null);
+    const [webTrackingStatus, setWebTrackingStatus] = useState(() => getWebTrackingSyncStatus());
 
     // Fix #9: Only enable auto-backup after a folder is successfully confirmed.
     // If the user cancels the folder picker, the toggle reverts to off.
@@ -272,6 +273,13 @@ const DataBackupTab: React.FC = () => {
                 token: webTrackingToken,
             }, forceFullSync);
             setLastWebTrackingSync(result.serverTime);
+            setWebTrackingStatus({
+                lastSyncAt: result.serverTime,
+                accepted: result.accepted,
+                rejected: result.rejected,
+                batchId: result.batchId,
+                error: null,
+            });
             addToast(
                 result.accepted > 0
                     ? `Synced ${result.accepted} records to web tracking.`
@@ -280,7 +288,9 @@ const DataBackupTab: React.FC = () => {
             );
         } catch (error) {
             console.error('Web tracking sync failed:', error);
-            addToast(error instanceof Error ? error.message : 'Web tracking sync failed.', 'error');
+            const message = error instanceof Error ? error.message : 'Web tracking sync failed.';
+            setWebTrackingStatus((current) => ({ ...current, error: message }));
+            addToast(message, 'error');
         } finally {
             setWebTrackingLoading(false);
         }
@@ -463,6 +473,11 @@ const DataBackupTab: React.FC = () => {
                                     </p>
                                     <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
                                         Last sync: <span className="font-medium">{lastWebTrackingSync ? new Date(lastWebTrackingSync).toLocaleString() : 'Never'}</span>
+                                    </p>
+                                    <p className={`text-xs mt-1 font-medium ${webTrackingStatus.error ? 'text-red-600 dark:text-red-400' : 'text-slate-400 dark:text-slate-500'}`}>
+                                        {webTrackingStatus.error
+                                            ? `Last error: ${webTrackingStatus.error}`
+                                            : `Last result: ${webTrackingStatus.accepted} accepted · ${webTrackingStatus.rejected} rejected`}
                                     </p>
                                 </div>
                             </div>
