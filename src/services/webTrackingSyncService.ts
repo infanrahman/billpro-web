@@ -384,6 +384,8 @@ export const pushWebTrackingChanges = async (
 let autoSyncTimer: ReturnType<typeof setTimeout> | null = null;
 let autoSyncRunning = false;
 let automaticSyncEnabled = false;
+let automaticSyncRetryCount = 0;
+const automaticSyncRetryDelays = [5000, 15000, 60000];
 
 export const queueWebTrackingSync = (delayMs = 3500) => {
     if (!automaticSyncEnabled || !getWebTrackingConfig().autoSyncEnabled) return;
@@ -398,8 +400,16 @@ export const queueWebTrackingSync = (delayMs = 3500) => {
         try {
             autoSyncRunning = true;
             await pushWebTrackingChanges();
+            automaticSyncRetryCount = 0;
         } catch (error) {
             console.warn('Automatic web tracking sync failed:', error);
+            if (automaticSyncRetryCount < automaticSyncRetryDelays.length) {
+                const retryDelay = automaticSyncRetryDelays[automaticSyncRetryCount];
+                automaticSyncRetryCount += 1;
+                queueWebTrackingSync(retryDelay);
+            } else {
+                automaticSyncRetryCount = 0;
+            }
         } finally {
             autoSyncRunning = false;
         }

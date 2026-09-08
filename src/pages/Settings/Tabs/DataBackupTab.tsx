@@ -489,6 +489,16 @@ const DataBackupTab: React.FC = () => {
                                 <RefreshCw size={16} className={webTrackingLoading ? 'animate-spin' : ''} />
                                 {webTrackingLoading ? 'Syncing...' : 'Sync All Data'}
                             </button>
+                            {webTrackingStatus.error && (
+                                <button
+                                    onClick={() => void handlePushWebTracking(false)}
+                                    disabled={webTrackingLoading || !can('webTracking.sync')}
+                                    className="inline-flex items-center justify-center gap-2 px-4 py-2.5 border border-amber-200 hover:bg-amber-50 disabled:opacity-50 disabled:cursor-not-allowed text-amber-700 dark:border-amber-800 dark:hover:bg-amber-900/20 dark:text-amber-300 text-sm font-bold rounded-lg transition-colors"
+                                >
+                                    <RefreshCw size={16} />
+                                    Retry Last Sync
+                                </button>
+                            )}
                             <button
                                 onClick={() => void handleTestWebTrackingConnection()}
                                 disabled={webTrackingTesting || !can('webTracking.sync')}
