@@ -54,6 +54,12 @@ export type WebTrackingPushResult = {
     replayed?: boolean;
 };
 
+export type WebTrackingConnectionResult = {
+    companies: number;
+    branches: number;
+    users: number;
+};
+
 const endpointKey = 'webTrackingEndpoint';
 const tokenKey = 'webTrackingToken';
 const lastSyncKey = 'webTrackingLastSyncAt';
@@ -232,6 +238,28 @@ export const saveWebTrackingConfig = (config: Pick<WebTrackingConfig, 'endpoint'
     if (config.autoSyncEnabled !== false) {
         queueWebTrackingSync(500);
     }
+};
+
+export const testWebTrackingConnection = async (
+    overrides: Partial<Pick<WebTrackingConfig, 'endpoint' | 'token'>> = {},
+): Promise<WebTrackingConnectionResult> => {
+    const config = { ...getWebTrackingConfig(), ...overrides };
+    const endpoint = normaliseEndpoint(config.endpoint || defaultEndpoint);
+    const token = (config.token || defaultToken).trim();
+    const response = await fetch(`${endpoint}/api/overview/`, {
+        headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    if (!response.ok) {
+        const detail = typeof payload?.detail === 'string' ? payload.detail : typeof payload?.error === 'string' ? payload.error : '';
+        throw new Error(detail || `Web tracking connection failed with status ${response.status}`);
+    }
+
+    return {
+        companies: Array.isArray(payload?.companies) ? payload.companies.length : 0,
+        branches: Array.isArray(payload?.branches) ? payload.branches.length : 0,
+        users: Array.isArray(payload?.users) ? payload.users.length : 0,
+    };
 };
 
 export const collectWebTrackingChanges = async (lastSyncAt?: string | null) => {

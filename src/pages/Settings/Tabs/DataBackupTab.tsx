@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { Download, Upload, Database, AlertTriangle, CheckCircle, Clock, Folder, Play, Cloud, RefreshCw, Save } from 'lucide-react';
 import { generateBackupData, restoreBackupData } from '../../../services/backupService';
-import { getWebTrackingConfig, pushWebTrackingChanges, saveWebTrackingConfig } from '../../../services/webTrackingSyncService';
+import { getWebTrackingConfig, pushWebTrackingChanges, saveWebTrackingConfig, testWebTrackingConnection } from '../../../services/webTrackingSyncService';
 import { useNotification } from '../../../contexts/NotificationContext';
 import { useTranslation } from 'react-i18next';
 import ConfirmationModal from '../../../components/UI/ConfirmationModal';
@@ -32,6 +32,8 @@ const DataBackupTab: React.FC = () => {
     const [webTrackingAutoSync, setWebTrackingAutoSync] = useState(() => getWebTrackingConfig().autoSyncEnabled);
     const [lastWebTrackingSync, setLastWebTrackingSync] = useState<string | null>(() => getWebTrackingConfig().lastSyncAt);
     const [webTrackingLoading, setWebTrackingLoading] = useState(false);
+    const [webTrackingTesting, setWebTrackingTesting] = useState(false);
+    const [webTrackingTestResult, setWebTrackingTestResult] = useState<string | null>(null);
 
     // Fix #9: Only enable auto-backup after a folder is successfully confirmed.
     // If the user cancels the folder picker, the toggle reverts to off.
@@ -284,6 +286,31 @@ const DataBackupTab: React.FC = () => {
         }
     };
 
+    const handleTestWebTrackingConnection = async () => {
+        if (!can('webTracking.sync')) {
+            addToast(t('common.access_denied'), 'error');
+            return;
+        }
+
+        try {
+            setWebTrackingTesting(true);
+            setWebTrackingTestResult(null);
+            const result = await testWebTrackingConnection({
+                endpoint: webTrackingEndpoint,
+                token: webTrackingToken,
+            });
+            const message = `Connected: ${result.companies} compan${result.companies === 1 ? 'y' : 'ies'}, ${result.branches} branch${result.branches === 1 ? '' : 'es'}, ${result.users} user${result.users === 1 ? '' : 's'}.`;
+            setWebTrackingTestResult(message);
+            addToast('Web tracking endpoint and token are valid.', 'success');
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unable to verify web tracking connection.';
+            setWebTrackingTestResult(message);
+            addToast(message, 'error');
+        } finally {
+            setWebTrackingTesting(false);
+        }
+    };
+
     return (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div className="flex items-center gap-4 mb-6">
@@ -447,6 +474,14 @@ const DataBackupTab: React.FC = () => {
                                 <RefreshCw size={16} className={webTrackingLoading ? 'animate-spin' : ''} />
                                 {webTrackingLoading ? 'Syncing...' : 'Sync All Data'}
                             </button>
+                            <button
+                                onClick={() => void handleTestWebTrackingConnection()}
+                                disabled={webTrackingTesting || !can('webTracking.sync')}
+                                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 border border-cyan-200 hover:bg-cyan-50 disabled:opacity-50 disabled:cursor-not-allowed text-cyan-700 dark:border-cyan-800 dark:hover:bg-cyan-900/20 dark:text-cyan-300 text-sm font-bold rounded-lg transition-colors"
+                            >
+                                <CheckCircle size={16} />
+                                {webTrackingTesting ? 'Testing...' : 'Test Connection'}
+                            </button>
                         </div>
 
                         <div className="grid grid-cols-1 lg:grid-cols-[1fr_0.8fr_auto] gap-3">
@@ -493,6 +528,13 @@ const DataBackupTab: React.FC = () => {
                             />
                             Automatically push changes after local updates
                         </label>
+                        {webTrackingTestResult && (
+                            <div className={`mt-3 rounded-lg px-3 py-2 text-sm font-semibold ${webTrackingTestResult.startsWith('Connected:')
+                                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
+                                : 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300'}`} role="status">
+                                {webTrackingTestResult}
+                            </div>
+                        )}
                     </div>
                 )
             }
