@@ -610,6 +610,8 @@ export default function TrackingDashboard() {
   const [backupLoading, setBackupLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [connectionState, setConnectionState] = useState<"idle" | "checking" | "online" | "error">("idle");
+  const [connectionMessage, setConnectionMessage] = useState("");
 
   const hasPermission = (permission: string) =>
     overview?.principal.role === "owner" || Boolean(overview?.principal.permissions.includes(permission));
@@ -622,6 +624,23 @@ export default function TrackingDashboard() {
       return groups;
     }, {}),
   ).sort(([left], [right]) => left.localeCompare(right));
+
+  const testConnection = async () => {
+    setConnectionState("checking");
+    setConnectionMessage("");
+    try {
+      const response = await fetch(usingRemoteApi ? remoteUrl("health/") : "/api/health", {
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error || payload?.detail || `Health check failed (${response.status})`);
+      setConnectionState("online");
+      setConnectionMessage(`${String(payload?.service || "Backend")} is reachable`);
+    } catch (err) {
+      setConnectionState("error");
+      setConnectionMessage(err instanceof Error ? err.message : "Unable to reach backend");
+    }
+  };
 
   const authHeader: Record<string, string> = authToken && authToken !== "cookie-session"
     ? { Authorization: `Bearer ${authToken}` }
@@ -1287,6 +1306,14 @@ export default function TrackingDashboard() {
           <strong>Desktop sync endpoint</strong>
           <code>{syncEndpoint}</code>
           <span>Create a managed token below and use it in the POS Backup tab.</span>
+          <button onClick={() => void testConnection()} disabled={connectionState === "checking"}>
+            {connectionState === "checking" ? "Testing connection..." : "Test connection"}
+          </button>
+          {connectionState !== "idle" && (
+            <span className={`connection-status ${connectionState}`} role="status">
+              {connectionState === "online" ? "✓" : connectionState === "error" ? "!" : "…"} {connectionMessage}
+            </span>
+          )}
         </div>
         <div className="sync-card" id="sync">
           <LockKeyhole size={20} />

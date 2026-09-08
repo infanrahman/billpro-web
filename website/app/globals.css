@@ -859,6 +859,29 @@ input:focus {
   font-style: italic;
 }
 
+.connection-status {
+  display: block;
+  padding: 7px 9px;
+  border-radius: 7px;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.connection-status.online {
+  color: #13795b;
+  background: #e8f8f0;
+}
+
+.connection-status.error {
+  color: #a52a2a;
+  background: #fff0f0;
+}
+
+.connection-status.checking {
+  color: var(--brand-dark);
+  background: #eef7f8;
+}
+
 .audit-row {
   gap: 10px;
   padding: 11px;
