@@ -7,6 +7,11 @@ export const metadata: Metadata = {
   title: "Billing Pro Operations",
   description:
     "Connected Billing Pro POS operations for sales, purchases, inventory, finance, users, and Saudi e-invoicing.",
+  icons: {
+    icon: "/app-icon.png",
+    shortcut: "/app-icon.png",
+    apple: "/app-icon.png",
+  },
   openGraph: {
     title: "Billing Pro Operations",
     description:
