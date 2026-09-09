@@ -9,6 +9,7 @@ import {
   ShoppingCart, Store, Truck, UsersRound, WalletCards, X, Zap,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { buildApiUrl } from "../../lib/tracking/apiUrl";
 
 export type Section = "overview" | "pos" | "sales" | "purchases" | "inventory" | "customers" | "suppliers" | "expenses" | "cashbook" | "reports" | "users" | "zatca" | "settings";
 type Row = Record<string, any> & { id: string; companyId?: string; branchId?: string; updatedAt?: string };
@@ -54,11 +55,7 @@ const money = (value: unknown) => `${Number(value || 0).toLocaleString("en-SA", 
 const date = (value: unknown) => value ? new Date(String(value)).toLocaleDateString("en-SA", { day: "2-digit", month: "short", year: "numeric" }) : "—";
 const text = (value: unknown, fallback = "—") => String(value ?? fallback);
 const apiBase = (process.env.NEXT_PUBLIC_BILLING_API_URL || "").replace(/\/+$/, "");
-const apiUrl = (path: string) => {
-  if (!apiBase) return path;
-  const remotePath = path.replace(/^\/api\/tracking\//, "").replace(/^\/api\//, "").replace(/^\/+/, "");
-  return `${apiBase}/${remotePath}`;
-};
+const apiUrl = (path: string) => buildApiUrl(path, apiBase);
 
 const camelize = (value: unknown): any => {
   if (Array.isArray(value)) return value.map(camelize);
