@@ -7,7 +7,7 @@ from .views import (
     ExpenseViewSet, InventoryViewSet, NotificationViewSet, PurchaseItemViewSet,
     PurchasePaymentViewSet, PurchaseViewSet, SaleItemViewSet, SaleViewSet, ScaleSyncLogViewSet,
     ScaleViewSet, ShiftViewSet, SpreadsheetViewSet, SyncBatchViewSet, SyncedRecordViewSet,
-    SupplierViewSet, TransactionViewSet, UserViewSet, health, login, logout, me, overview, sync_push,
+    SupplierViewSet, TransactionViewSet, UserViewSet, health, login, logout, me, overview, sync_push, zatca_status,
     token_detail, tokens,
 )
 
@@ -46,6 +46,7 @@ urlpatterns = [
     path("auth/logout/", logout, name="logout"),
     path("auth/me/", me, name="me"),
     path("overview/", overview, name="overview"),
+    path("zatca/", zatca_status, name="zatca-status"),
     path("tokens/", tokens, name="tokens"),
     path("tokens/<uuid:token_id>/", token_detail, name="token-detail"),
     path("sync/push/", sync_push, name="sync-push"),

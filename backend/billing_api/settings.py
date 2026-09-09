@@ -9,6 +9,11 @@ DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() in {"1", "true", "yes"}
 DJANGO_SECURE = os.getenv("DJANGO_SECURE", "false").lower() in {"1", "true", "yes"}
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",") if host.strip()]
 
+# ZATCA Phase 2 onboarding credentials are deployment secrets only.
+ZATCA_ENVIRONMENT = os.getenv("ZATCA_ENVIRONMENT", "SIMULATION").upper()
+ZATCA_CSID = os.getenv("ZATCA_CSID", "")
+ZATCA_SECRET = os.getenv("ZATCA_SECRET", "")
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

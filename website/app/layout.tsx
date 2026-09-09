@@ -4,13 +4,13 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL(trackingConfig.publicUrl),
-  title: "Billing Pro Tracking Dashboard",
+  title: "Billing Pro Operations",
   description:
-    "Company and branch operations tracker for Billing Pro POS sync, audit, sales, inventory, purchases, expenses, and cashbook data.",
+    "Connected Billing Pro POS operations for sales, purchases, inventory, finance, users, and Saudi e-invoicing.",
   openGraph: {
-    title: "Billing Pro Tracking Dashboard",
+    title: "Billing Pro Operations",
     description:
-      "Monitor synced POS activity across companies, branches, permissions, and business modules.",
+      "Run your connected POS, sales, inventory, finance, and ZATCA Phase 2 workflows.",
     images: ["/logo-cyber.png"]
   }
 };

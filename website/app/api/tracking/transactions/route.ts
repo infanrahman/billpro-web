@@ -22,6 +22,21 @@ const cleanNumber = (value: unknown) => {
   return Number.isFinite(number) ? number : 0;
 };
 
+const cleanItems = (value: unknown) => Array.isArray(value)
+  ? value.filter((item) => item && typeof item === "object").map((item) => {
+      const source = item as Record<string, unknown>;
+      return {
+        itemId: cleanText(source.itemId || source.id),
+        name: cleanText(source.name),
+        quantity: cleanNumber(source.quantity || 1),
+        price: cleanNumber(source.price || source.salePrice),
+        taxRate: cleanNumber(source.taxRate),
+        taxAmount: cleanNumber(source.taxAmount),
+        netAmount: cleanNumber(source.netAmount),
+      };
+    })
+  : [];
+
 const getEntity = (value: unknown): TransactionEntity | null => {
   const entity = cleanText(value) as TransactionEntity;
   return transactionEntities.includes(entity) ? entity : null;
@@ -37,6 +52,16 @@ const editableFields = (entity: TransactionEntity, body: Record<string, unknown>
       remainingAmount: cleanNumber(body.remainingAmount),
       paymentStatus: cleanText(body.paymentStatus) || "pending",
       status: cleanText(body.status) || "pending",
+      paymentMode: cleanText(body.paymentMode) || "cash",
+      items: cleanItems(body.items),
+      taxAmount: cleanNumber(body.taxAmount),
+      taxRate: cleanNumber(body.taxRate || 15),
+      invoiceType: cleanText(body.invoiceType) || "simplified",
+      zatcaStatus: cleanText(body.zatcaStatus) || "PENDING",
+      zatcaUuid: cleanText(body.zatcaUuid || body.uuid) || undefined,
+      zatcaHash: cleanText(body.zatcaHash || body.invoiceHash) || undefined,
+      zatcaXml: cleanText(body.zatcaXml || body.xml) || undefined,
+      zatcaQrCode: cleanText(body.zatcaQrCode || body.qrCode) || undefined,
       createdAt: cleanText(body.createdAt) || new Date().toISOString(),
     };
   }
@@ -47,6 +72,9 @@ const editableFields = (entity: TransactionEntity, body: Record<string, unknown>
       supplierName: cleanText(body.supplierName) || "Supplier",
       totalAmount: cleanNumber(body.totalAmount),
       paidAmount: cleanNumber(body.paidAmount),
+      paymentMode: cleanText(body.paymentMode) || "cash",
+      items: cleanItems(body.items),
+      taxAmount: cleanNumber(body.taxAmount),
       status: cleanText(body.status) || "pending",
       type: cleanText(body.type) || "bill",
       date: cleanText(body.date) || new Date().toISOString(),

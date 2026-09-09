@@ -14,7 +14,7 @@ Content-Type: application/json
 ```json
 {
   "username": "owner",
-  "password": "owner123"
+  "password": "configured-password"
 }
 ```
 
@@ -24,17 +24,10 @@ Send the returned token with protected requests:
 Authorization: Bearer bt_generated_token_value
 ```
 
-Bootstrap users:
-
-- `owner` / `owner123`: full owner access.
-- `manager` / `manager123`: limited manager access.
-
-Bootstrap login is enabled by default in development. In production, it only works when `BILLING_TRACKING_BOOTSTRAP_ENABLED=true`; disable it after creating real users and managed tokens.
-
-Legacy demo tokens still work for local desktop compatibility:
-
-- `demo-owner-token`: full owner access.
-- `demo-manager-token`: limited manager access.
+Optional bootstrap users are available only when explicitly enabled with
+`BILLING_TRACKING_BOOTSTRAP_ENABLED=true` and configured passwords. Disable
+bootstrap login after creating real users and managed tokens. No demo bearer
+tokens or static business records are accepted.
 
 Token management:
 
@@ -51,13 +44,13 @@ Every synced record must include `companyId`. Branch-level records should includ
 Master/dashboard views can request:
 
 ```http
-GET /api/dashboard/summary?companyId=11111111-1111-1111-1111-111111111111
+GET /api/dashboard/summary?companyId={companyId}
 ```
 
 Branch views can request:
 
 ```http
-GET /api/dashboard/summary?companyId=11111111-1111-1111-1111-111111111111&branchId=00000000-0000-0000-0000-000000000000
+GET /api/dashboard/summary?companyId={companyId}&branchId={branchId}
 ```
 
 ## Sync Push
@@ -128,6 +121,7 @@ Response:
 - `POST|PUT|DELETE /api/tracking/customers`
 - `POST|PUT|DELETE /api/tracking/suppliers`
 - `POST|PUT|DELETE /api/tracking/transactions`
+- `GET /api/tracking/zatca?id={invoiceId}`
 
 ## Storage
 
@@ -142,6 +136,10 @@ The SQLite and legacy JSON paths can be configured with:
 
 See `DEPLOYMENT.md` and `.env.example` for production setup notes.
 
-## Next Production Step
+## Multi-application workspace
 
-Replace the JSON-backed repository with SQLite/Postgres while keeping the route contracts stable.
+The web client exposes separate applications at `/overview`, `/pos`, `/sales`,
+`/purchases`, `/inventory`, `/customers`, `/suppliers`, `/expenses`,
+`/cashbook`, `/reports`, `/zatca`, `/users`, and `/settings`. They share the
+same authenticated scope and repository, so a POS sale is immediately
+available to Sales, Reports, and the ZATCA readiness view after refresh.

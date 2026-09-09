@@ -4,6 +4,7 @@ import secrets
 import uuid
 
 from django.contrib.auth import authenticate
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -583,6 +584,49 @@ def overview(request):
         "devices": serialize_overview_rows(DeviceSerializer, scoped(Device.objects).order_by("-last_seen_at")[:50], "devices"),
         "recentAudit": serialize_overview_rows(AuditEntrySerializer, scoped(AuditEntry.objects).order_by("-created_at")[:50], "audit"),
         "records": records,
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def zatca_status(request):
+    """Return live Phase 2 readiness for synchronized sales records."""
+    user = request.user
+    company_qs = Company.objects.all() if user.is_superuser else user.companies.all()
+    company_id = request.query_params.get("companyId")
+    branch_id = request.query_params.get("branchId")
+    invoice_id = request.query_params.get("id")
+    sales = Sale.objects.filter(company__in=company_qs)
+    if company_id:
+        sales = sales.filter(company_id=company_id)
+    if branch_id:
+        sales = sales.filter(branch_id=branch_id)
+    if invoice_id:
+        sales = sales.filter(pk=invoice_id)
+
+    def invoice_checks(sale):
+        metadata = sale.metadata or {}
+        return [
+            {"key": "supplier", "label": "Supplier VAT and company scope", "passed": bool(sale.company_id)},
+            {"key": "xml", "label": "UBL invoice XML", "passed": bool(metadata.get("zatcaXml") or metadata.get("xml") or metadata.get("signedXml"))},
+            {"key": "security", "label": "Invoice hash and UUID", "passed": bool(sale.zatca_hash and (metadata.get("zatcaUuid") or metadata.get("uuid")))},
+            {"key": "qr", "label": "Security QR payload", "passed": bool(metadata.get("zatcaQrCode") or metadata.get("qrCode") or metadata.get("qr"))},
+            {"key": "response", "label": "Reporting or clearance response", "passed": sale.zatca_status in {"REPORTED", "CLEARED"}},
+        ]
+
+    if invoice_id:
+        sale = sales.first()
+        if not sale:
+            return Response({"error": "Invoice was not found in the selected scope"}, status=status.HTTP_400_BAD_REQUEST)
+        checks = invoice_checks(sale)
+        ready = all(check["passed"] for check in checks)
+        return Response({"phase": "2", "ready": ready, "invoiceId": str(sale.id), "status": sale.zatca_status or "PENDING", "checks": checks, "message": "Invoice has all tracked Phase 2 fields." if ready else "Invoice is missing one or more tracked Phase 2 fields."})
+
+    return Response({
+        "phase": "2",
+        "environment": "PRODUCTION" if getattr(settings, "ZATCA_ENVIRONMENT", "SIMULATION") == "PRODUCTION" else "SIMULATION",
+        "configured": bool(getattr(settings, "ZATCA_CSID", "") and getattr(settings, "ZATCA_SECRET", "")),
+        "invoices": [{"id": str(sale.id), "invoiceNumber": sale.invoice_number, "status": sale.zatca_status or "PENDING", "ready": all(check["passed"] for check in invoice_checks(sale))} for sale in sales[:50]],
     })
 
 
