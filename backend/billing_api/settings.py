@@ -24,6 +24,17 @@ INSTALLED_APPS = [
     "corsheaders",
     "rest_framework",
     "django_filters",
+    "system",
+    "accounts",
+    "organizations",
+    "inventory",
+    "relationships",
+    "sales",
+    "purchases",
+    "finance",
+    "reports",
+    "sync",
+    "zatca",
     "tracking",
 ]
 

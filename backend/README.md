@@ -9,6 +9,27 @@ This is the relational backend for the Billing Pro web tracker. It provides:
 - idempotent POS sync at `POST /api/sync/push/`
 - typed reporting tables plus a complete `SyncedRecord` payload table
 
+## Backend applications
+
+The API is separated into domain applications while preserving the existing
+public `/api/` routes and shared database schema:
+
+- `accounts`: authentication, users, and managed access tokens
+- `organizations`: companies, branches, and devices
+- `inventory`: items and categories
+- `relationships`: customers, suppliers, and customer payments
+- `sales`: sales and sale items
+- `purchases`: purchases, purchase items, and supplier payments
+- `finance`: expenses, cash book, parties, and transactions
+- `reports`: overview, audit, notifications, shifts, scales, and activity
+- `sync`: desktop synchronization batches and synced records
+- `zatca`: Saudi e-invoicing Phase 2 readiness endpoints
+- `system`: service health
+
+The legacy `tracking` app remains the compatibility data layer so existing
+POS sync clients and deployed databases continue to work during the domain
+split.
+
 ## Local setup
 
 From this directory:
@@ -35,6 +56,10 @@ Create the first owner with a one-off command:
 ```powershell
 python manage.py createsuperuser
 ```
+
+For automated Railway startup, set `DJANGO_SUPERUSER_USERNAME`,
+`DJANGO_SUPERUSER_PASSWORD`, and `DJANGO_SUPERUSER_EMAIL`. The deployment
+command runs `ensure_admin` before starting Gunicorn.
 
 Then create a normal tracking user in Django Admin, assign the user to a
 company and branches, and use `/api/auth/login/` to obtain a managed token.
