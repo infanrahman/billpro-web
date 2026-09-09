@@ -81,7 +81,7 @@ const lastSyncErrorKey = 'webTrackingLastSyncError';
 // The desktop build cannot infer the URL of a hosted tracker. Set
 // VITE_WEB_TRACKING_URL at build time; Railway is the production fallback.
 const defaultEndpoint = (import.meta.env.VITE_WEB_TRACKING_URL || 'https://billpro-web-production.up.railway.app').trim();
-const defaultToken = (import.meta.env.VITE_WEB_TRACKING_TOKEN || 'demo-owner-token').trim();
+const defaultToken = (import.meta.env.VITE_WEB_TRACKING_TOKEN || '').trim();
 const legacyVercelEndpoint = 'https://billpro-web.vercel.app';
 
 const syncSources: SyncSource[] = [
@@ -106,7 +106,7 @@ const syncSources: SyncSource[] = [
     { entity: 'shifts', table: db.shifts },
 ];
 
-const normaliseEndpoint = (endpoint: string) => endpoint.trim().replace(/\/+$/, '');
+const normaliseEndpoint = (endpoint: string) => endpoint.trim().replace(/\/+$/, '').replace(/\/api$/, '');
 
 const toIsoValue = (value: unknown): unknown => {
     if (value instanceof Date) return value.toISOString();
@@ -298,10 +298,9 @@ export const collectWebTrackingChanges = async (lastSyncAt?: string | null) => {
                 (record): record is SyncableRecord => !!record && typeof record === 'object',
             );
             const changed = records
-                // Branches are foundational scope records. Include every local
-                // branch during a full sync, even if it came from an older DB
-                // version without a usable updatedAt value.
-                .filter((record) => entity === 'branches' && !lastSyncAt ? true : recordUpdatedAt(record) > since)
+                // A full sync must also upload legacy records without timestamps.
+                .filter((record) => !lastSyncAt || !recordUpdatedAt(record) || recordUpdatedAt(record) > since || entity === 'branches' || entity === 'companies')
+                .filter((record) => String(entity === 'companies' ? record.id : record.companyId || getCurrentCompanyId()) === getCurrentCompanyId())
                 .map((record) => {
                     const companyId = entity === 'companies'
                         ? String(record.companyId || record.id || getCurrentCompanyId())
@@ -310,6 +309,7 @@ export const collectWebTrackingChanges = async (lastSyncAt?: string | null) => {
                     return toIsoValue({
                         ...sanitizeRecord(record),
                         companyId,
+                        updatedAt: recordUpdatedAt(record) ? new Date(recordUpdatedAt(record)).toISOString() : new Date().toISOString(),
                         branchId: record.branchId || getCurrentBranchId(),
                     });
                 });
@@ -327,6 +327,12 @@ export const pushWebTrackingChanges = async (
 ) => {
     const config = { ...getWebTrackingConfig(), ...overrides };
     const endpoint = normaliseEndpoint(config.endpoint || defaultEndpoint);
+    if (!(config.token || defaultToken).trim() || (config.token || defaultToken).startsWith('demo-')) {
+        const message = 'Create a desktop sync token in web Settings and save it in Web Tracking Sync.';
+        localStorage.setItem(lastSyncErrorKey, message);
+        throw new Error(message);
+    }
+    const syncStartedAt = new Date().toISOString();
     const changes = await collectWebTrackingChanges(forceFullSync ? null : config.lastSyncAt);
     let response: Response;
     try {
@@ -364,7 +370,12 @@ export const pushWebTrackingChanges = async (
     }
 
     const result = (await response.json()) as WebTrackingPushResult;
-    localStorage.setItem(lastSyncKey, result.serverTime);
+    if (result.rejected > 0) {
+        const message = `${result.accepted} records accepted, ${result.rejected} rejected. Check company/branch access, then run Sync All Data. The sync cursor has not advanced.`;
+        localStorage.setItem(lastSyncErrorKey, message);
+        throw new Error(message);
+    }
+    localStorage.setItem(lastSyncKey, syncStartedAt);
     localStorage.setItem(lastSyncResultKey, JSON.stringify({
         lastSyncAt: result.serverTime,
         accepted: result.accepted,

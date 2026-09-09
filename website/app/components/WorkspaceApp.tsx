@@ -1,5 +1,5 @@
 "use client";
-
+import { prepareApiRequest, apiErrorMessage } from "../../lib/tracking/apiRequest";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -9,32 +9,12 @@ import {
   ShoppingCart, Store, Truck, UsersRound, WalletCards, X, Zap,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import SyncConnection from "./SyncConnection";
+import { emptyOverview, normalizeOverview, type Row, type Overview } from "../../lib/tracking/overview";
 import { buildApiUrl } from "../../lib/tracking/apiUrl";
 
+
 export type Section = "overview" | "pos" | "sales" | "purchases" | "inventory" | "customers" | "suppliers" | "expenses" | "cashbook" | "reports" | "users" | "zatca" | "settings";
-type Row = Record<string, any> & { id: string; companyId?: string; branchId?: string; updatedAt?: string };
-type Overview = {
-  principal: { id: string; name: string; role: string; permissions: string[] };
-  scope: { companyId?: string; branchId?: string };
-  companies: Row[];
-  branches: Row[];
-  masterData: { inventory: Row[]; customers: Row[]; suppliers: Row[] };
-  users: Row[];
-  transactions: { sales: Row[]; purchases: Row[]; expenses: Row[]; cashbook: Row[]; customerPayments: Row[]; purchasePayments: Row[] };
-  totals: { sales: number; paid: number; outstanding: number; purchases: number; expenses: number; lowStock: number };
-  branchHealth: Row[];
-  entities: Row[];
-  audit: Row[];
-};
-
-const emptyOverview: Overview = {
-  principal: { id: "", name: "", role: "", permissions: [] }, scope: {}, companies: [], branches: [],
-  masterData: { inventory: [], customers: [], suppliers: [] }, users: [],
-  transactions: { sales: [], purchases: [], expenses: [], cashbook: [], customerPayments: [], purchasePayments: [] },
-  totals: { sales: 0, paid: 0, outstanding: 0, purchases: 0, expenses: 0, lowStock: 0 },
-  branchHealth: [], entities: [], audit: [],
-};
-
 const navigation: Array<{ id: Section; label: string; icon: typeof Store; group: string }> = [
   { id: "overview", label: "Overview", icon: BarChart3, group: "Workspace" },
   { id: "pos", label: "Point of Sale", icon: ShoppingCart, group: "Workspace" },
@@ -56,42 +36,6 @@ const date = (value: unknown) => value ? new Date(String(value)).toLocaleDateStr
 const text = (value: unknown, fallback = "—") => String(value ?? fallback);
 const apiBase = (process.env.NEXT_PUBLIC_BILLING_API_URL || "").replace(/\/+$/, "");
 const apiUrl = (path: string) => buildApiUrl(path, apiBase);
-
-const camelize = (value: unknown): any => {
-  if (Array.isArray(value)) return value.map(camelize);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()), camelize(item)]));
-};
-
-const normalizeRecord = (value: unknown, entity: string): Row => {
-  const source = camelize(value) as Record<string, any>;
-  const record = { ...source, id: String(source.id || crypto.randomUUID()) } as Row;
-  if (source.company !== undefined) record.companyId = String(source.company);
-  if (source.branch !== undefined && source.branch !== null) record.branchId = String(source.branch);
-  if (entity === "companies") record.companyId = record.id;
-  if (entity === "users") { record.name = source.name || source.username || ""; record.username = source.username || ""; record.status = source.isActive === false ? "inactive" : "active"; }
-  return record;
-};
-
-const normalizeOverview = (payload: any): Overview => {
-  const records = payload?.records || {};
-  const recordsFor = (entity: string) => (records[entity] || payload?.[entity] || []).map((item: unknown) => normalizeRecord(item, entity));
-  const companies = (payload?.companies || recordsFor("companies")).map((item: unknown) => normalizeRecord(item, "companies"));
-  const branches = (payload?.branches || recordsFor("branches")).map((item: unknown) => normalizeRecord(item, "branches"));
-  const sales = (payload?.transactions?.sales || recordsFor("sales")) as Row[];
-  const purchases = (payload?.transactions?.purchases || recordsFor("purchases")) as Row[];
-  const expenses = (payload?.transactions?.expenses || recordsFor("expenses")) as Row[];
-  const total = (rows: Row[], ...keys: string[]) => rows.reduce((sum, row) => sum + Number(keys.map((key) => row[key]).find((item) => item !== undefined) || 0), 0);
-  return {
-    ...emptyOverview, ...payload, principal: payload?.principal || emptyOverview.principal,
-    scope: payload?.scope || { companyId: companies[0]?.id }, companies, branches,
-    users: (payload?.users || recordsFor("users")) as Row[],
-    masterData: { inventory: (payload?.masterData?.inventory || recordsFor("inventory")) as Row[], customers: (payload?.masterData?.customers || recordsFor("customers")) as Row[], suppliers: (payload?.masterData?.suppliers || recordsFor("suppliers")) as Row[] },
-    transactions: { sales, purchases, expenses, cashbook: (payload?.transactions?.cashbook || recordsFor("cashbook")) as Row[], customerPayments: (payload?.transactions?.customerPayments || recordsFor("customerPayments")) as Row[], purchasePayments: (payload?.transactions?.purchasePayments || recordsFor("purchasePayments")) as Row[] },
-    totals: payload?.totals || { sales: total(sales, "grandTotal"), paid: total(sales, "paidAmount"), outstanding: total(sales, "remainingAmount"), purchases: total(purchases, "totalAmount"), expenses: total(expenses, "amount"), lowStock: 0 },
-    branchHealth: payload?.branchHealth || [], entities: payload?.entities || [], audit: payload?.audit || payload?.recentAudit || [],
-  };
-};
 
 function LoginScreen({ onLogin }: { onLogin: (username: string, password: string) => Promise<void> }) {
   const [form, setForm] = useState({ username: "", password: "" });
@@ -141,19 +85,19 @@ function DataPage({ section, overview, companyId, branchId, request, onSaved }: 
 
 function ReportsPage({ overview }: { overview: Overview }) { return <div className="page-stack"><PageHeader eyebrow="Insights" title="Reports that explain the business." description="Live totals and branch health calculated from synchronized transactions." action={<button className="button secondary"><FileText size={16} /> Export report</button>} /><section className="metric-grid"><Metric icon={CircleDollarSign} label="Sales" value={money(overview.totals.sales)} /><Metric icon={ShoppingBag} label="Purchases" value={money(overview.totals.purchases)} tone="violet" /><Metric icon={WalletCards} label="Expenses" value={money(overview.totals.expenses)} tone="red" /><Metric icon={Activity} label="Estimated profit" value={money(overview.totals.paid - overview.totals.expenses)} tone="green" /></section><section className="surface table-surface"><div className="panel-heading"><div><span className="section-eyebrow">Branch performance</span><h2>Health by location</h2></div><BarChart3 size={19} /></div>{overview.branchHealth.length ? <DataTable rows={overview.branchHealth.map((row) => ({ ...row, name: row.branchName, amount: row.revenue, status: `${row.transactionCount || 0} transactions` }))} section="reports" /> : <Empty title="No branch report yet" copy="Branch health appears after branch-level POS data is synchronized." />}</section></div>; }
 
-function SettingsPage({ overview }: { overview: Overview }) { return <div className="page-stack"><PageHeader eyebrow="Administration" title="Settings for your workspace." description="Live connection and operating scope details." /><section className="settings-grid"><article className="surface settings-card"><span className="section-eyebrow">Connected source</span><h2>POS data pipeline</h2><p>Records are read from the connected tracking API and scoped to the selected company and branch.</p><div className="setting-status"><span className="pulse-dot" /> Live connection</div></article><article className="surface settings-card"><span className="section-eyebrow">Current scope</span><h2>{overview.companies.length} companies · {overview.branches.length} branches</h2><p>Change company or branch from the top bar to update every application at once.</p><Link className="button secondary" href="/overview">Return to overview</Link></article><article className="surface settings-card"><span className="section-eyebrow">Security</span><h2>Role-aware access</h2><p>Your current permissions are enforced by the backend on every read and write request.</p><span className="status active">{text(overview.principal.role, "staff")}</span></article></section></div>; }
+function SettingsPage({ overview, request }: { overview: Overview; request: (path: string, init?: RequestInit) => Promise<any> }) { return <div className="page-stack"><PageHeader eyebrow="Administration" title="Settings for your workspace." description="Live connection and operating scope details." /><section className="settings-grid">{apiBase && <SyncConnection apiBase={apiBase} request={request} />}<article className="surface settings-card"><span className="section-eyebrow">Connected source</span><h2>POS data pipeline</h2><p>Records are read from the connected tracking API and scoped to the selected company and branch.</p><div className="setting-status"><span className="pulse-dot" /> Live connection</div></article><article className="surface settings-card"><span className="section-eyebrow">Current scope</span><h2>{overview.companies.length} companies · {overview.branches.length} branches</h2><p>Change company or branch from the top bar to update every application at once.</p><Link className="button secondary" href="/overview">Return to overview</Link></article><article className="surface settings-card"><span className="section-eyebrow">Security</span><h2>Role-aware access</h2><p>Your current permissions are enforced by the backend on every read and write request.</p><span className="status active">{text(overview.principal.role, "staff")}</span></article></section></div>; }
 
 function ZatcaPage({ overview, request }: { overview: Overview; request: (path: string, init?: RequestInit) => Promise<any> }) { const invoices = overview.transactions.sales; const ready = invoices.filter((row) => row.zatcaStatus === "REPORTED" || row.zatcaStatus === "CLEARED").length; const [message, setMessage] = useState(""); const validate = async (id: string) => { try { const result = await request(`/api/tracking/zatca?id=${encodeURIComponent(id)}`); setMessage(result.message || (result.ready ? "Invoice passed readiness checks." : "Invoice needs compliance data.")); } catch (err) { setMessage(err instanceof Error ? err.message : "Unable to validate invoice"); } }; return <div className="page-stack"><PageHeader eyebrow="Saudi e-invoicing" title="ZATCA Phase 2 control center." description="Track invoice readiness, cryptographic fields, and reporting status from one compliance workspace." action={<span className="compliance-badge"><ShieldCheck size={15} /> Integration phase</span>} /><section className="compliance-hero"><div><span className="section-eyebrow">Compliance posture</span><h2>{ready} of {invoices.length} sales marked compliant</h2><p>Phase 2 requires a connected EGS to generate compliant XML, apply security features, and submit through ZATCA reporting or clearance APIs.</p></div><div className="compliance-ring"><strong>{invoices.length ? Math.round((ready / invoices.length) * 100) : 0}%</strong><small>ready</small></div></section><section className="compliance-grid"><article className="surface checklist"><div className="panel-heading"><div><span className="section-eyebrow">Readiness checklist</span><h2>What the system verifies</h2></div><CheckCircle2 size={19} /></div>{["Supplier VAT and address data", "UBL invoice XML and required fields", "Invoice hash, UUID, ICV and PIH chain", "QR code security tags", "Reporting / clearance response status"].map((item, index) => <div className="check-row" key={item}><span className={index < 3 ? "check complete" : "check"}>{index < 3 ? "✓" : "·"}</span><span>{item}</span><small>{index < 3 ? "Tracked" : "Needs integration data"}</small></div>)}</article><article className="surface table-surface"><div className="panel-heading"><div><span className="section-eyebrow">Invoice status</span><h2>Latest e-invoices</h2></div><ShieldCheck size={19} /></div>{invoices.length ? <div className="zatca-list">{invoices.slice(0, 8).map((invoice) => <div className="zatca-row" key={invoice.id}><span><strong>{text(invoice.invoiceNumber, invoice.id.slice(0, 8))}</strong><small>{date(invoice.createdAt)} · {money(invoice.grandTotal)}</small></span><span className={`status ${String(invoice.zatcaStatus || "pending").toLowerCase()}`}>{text(invoice.zatcaStatus, "Pending")}</span><button className="text-link" onClick={() => void validate(invoice.id)}>Validate</button></div>)}</div> : <Empty title="No invoices to verify" copy="Create a sale in the POS and its ZATCA fields will appear here when synchronized." />}{message && <div className="inline-message">{message}</div>}</article></section><p className="compliance-note">Compliance readiness is calculated from synchronized invoice data. Production clearance/reporting still requires valid ZATCA onboarding credentials and verification through the official SDK and APIs.</p></div>; }
 
 export default function WorkspaceApp({ section }: { section: Section }) {
   const [token, setToken] = useState<string | undefined>(undefined); const [overview, setOverview] = useState<Overview>(emptyOverview); const [companyId, setCompanyId] = useState(""); const [branchId, setBranchId] = useState(""); const [loading, setLoading] = useState(false); const [error, setError] = useState(""); const [menuOpen, setMenuOpen] = useState(false);
-  const request = async (path: string, init: RequestInit = {}) => { const headers = new Headers(init.headers); if (init.body) headers.set("Content-Type", "application/json"); if (token && token !== "cookie-session") headers.set("Authorization", `Bearer ${token}`); const response = await fetch(apiUrl(path), { ...init, headers, credentials: "include" }); const payload = await response.json().catch(() => null); if (!response.ok) throw new Error(payload?.error || payload?.detail || `Request failed (${response.status})`); return payload; };
-  const load = async () => { if (!token) return; setLoading(true); setError(""); try { const params = new URLSearchParams(); if (companyId) params.set("companyId", companyId); if (branchId) params.set("branchId", branchId); const payload = await request(`/api/tracking/overview${params.toString() ? `?${params.toString()}` : ""}`); const next = normalizeOverview(payload); setOverview(next); if (!companyId && next.scope.companyId) setCompanyId(String(next.scope.companyId)); } catch (err) { setError(err instanceof Error ? err.message : "Unable to load live workspace"); } finally { setLoading(false); } };
+  const request = async (path: string, init: RequestInit = {}) => { const headers = new Headers(init.headers); if (init.body) headers.set("Content-Type", "application/json"); if (token && token !== "cookie-session") headers.set("Authorization", `Bearer ${token}`); const prepared = prepareApiRequest(path, init, Boolean(apiBase)); const response = await fetch(apiUrl(prepared.path), { ...prepared.init, headers, credentials: "include" }); const payload = await response.json().catch(() => null); if (!response.ok) throw new Error(apiErrorMessage(payload, response.status)); return payload; };
+  const load = async () => { if (!token) return; setLoading(true); setError(""); try { const params = new URLSearchParams(); if (companyId) params.set("companyId", companyId); if (branchId) params.set("branchId", branchId); const payload = await request(`/api/tracking/overview${params.toString() ? `?${params.toString()}` : ""}`); const next = normalizeOverview(payload); setOverview(next); if (payload.accessMessage) setError(payload.accessMessage); if (!companyId && next.scope.companyId) setCompanyId(String(next.scope.companyId)); } catch (err) { setError(err instanceof Error ? err.message : "Unable to load live workspace"); } finally { setLoading(false); } };
   useEffect(() => { let active = true; const stored = window.localStorage.getItem("billingTrackingToken"); if (apiBase) { if (active) setToken(stored || ""); } else { fetch("/api/auth/session", { credentials: "include" }).then((response) => { if (!response.ok) throw new Error(); if (active) setToken(stored || "cookie-session"); }).catch(() => { if (active) setToken(stored || ""); }); } return () => { active = false; }; }, []);
   useEffect(() => { void load(); }, [token, companyId, branchId]);
   const login = async (username: string, password: string) => { const result = await request("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }); const nextToken = result.token || "cookie-session"; if (apiBase) window.localStorage.setItem("billingTrackingToken", nextToken); setToken(nextToken); };
   const logout = async () => { try { await request("/api/auth/logout", { method: "POST" }); } finally { window.localStorage.removeItem("billingTrackingToken"); setToken(""); setOverview(emptyOverview); } };
-  const page = useMemo(() => { if (section === "overview") return <OverviewPage overview={overview} onRefresh={() => void load()} />; if (section === "pos") return <PosPage overview={overview} companyId={companyId} branchId={branchId} request={request} onSaved={() => void load()} />; if (section === "reports") return <ReportsPage overview={overview} />; if (section === "zatca") return <ZatcaPage overview={overview} request={request} />; if (section === "settings") return <SettingsPage overview={overview} />; return <DataPage section={section} overview={overview} companyId={companyId} branchId={branchId} request={request} onSaved={() => void load()} />; }, [section, overview, companyId, branchId, loading]);
+  const page = useMemo(() => { if (section === "overview") return <OverviewPage overview={overview} onRefresh={() => void load()} />; if (section === "pos") return <PosPage overview={overview} companyId={companyId} branchId={branchId} request={request} onSaved={() => void load()} />; if (section === "reports") return <ReportsPage overview={overview} />; if (section === "zatca") return <ZatcaPage overview={overview} request={request} />; if (section === "settings") return <SettingsPage overview={overview} request={request} />; return <DataPage section={section} overview={overview} companyId={companyId} branchId={branchId} request={request} onSaved={() => void load()} />; }, [section, overview, companyId, branchId, loading, token]);
   if (token === undefined) return <div className="app-loading"><span className="brand-symbol"><Store size={19} /></span><span>Loading workspace…</span></div>;
   if (!token) return <LoginScreen onLogin={login} />;
   return <div className="workspace-app"><Sidebar section={section} open={menuOpen} onClose={() => setMenuOpen(false)} onLogout={() => void logout()} /><div className="workspace-body"><Topbar overview={overview} companyId={companyId} branchId={branchId} onCompany={(value) => { setCompanyId(value); setBranchId(""); }} onBranch={setBranchId} onRefresh={() => void load()} onMenu={() => setMenuOpen(true)} loading={loading} /><main className="workspace-scroll"><div className="workspace-content">{error && <div className="error-banner global-error"><AlertTriangle size={17} />{error}<button onClick={() => setError("")}><X size={15} /></button></div>}{page}</div></main></div></div>;

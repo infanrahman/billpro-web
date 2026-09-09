@@ -63,3 +63,30 @@ command runs `ensure_admin` before starting Gunicorn.
 
 Then create a normal tracking user in Django Admin, assign the user to a
 company and branches, and use `/api/auth/login/` to obtain a managed token.
+
+## Connecting existing desktop records
+
+Deploy the current backend and website, and rebuild/restart the desktop POS
+with the current sync service before uploading older records.
+
+1. Sign in to the website with an account assigned to the POS company. A
+   superuser is required for the initial sync if the POS company does not yet
+   exist in Django.
+2. In web Settings, create a desktop sync token.
+3. In desktop Settings → Data Backup → Web Tracking Sync, save the Railway
+   service URL and that token. The service accepts a URL with or without `/api`.
+4. Run Test Connection, then Sync All Data for the selected company. Full sync
+   includes records from older versions without an update timestamp. Rejected
+   records produce an error and do not advance the incremental sync cursor.
+5. Assign ordinary web users to the imported company in Django Admin, select
+   that company in the website, and refresh.
+
+POS employee identities are mapped to company-specific Django records with
+numeric IDs and unusable passwords. Desktop sync does not overwrite existing
+web account passwords or permissions. Web access is provisioned separately.
+
+Regression checks use a temporary test database:
+
+```powershell
+python manage.py test tracking --noinput
+```

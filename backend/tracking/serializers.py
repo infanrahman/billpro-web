@@ -1,3 +1,4 @@
+from django.db import transaction
 from rest_framework import serializers
 
 from .models import (
@@ -68,7 +69,7 @@ class TrackingUserSerializer(serializers.ModelSerializer):
         branches = validated_data.pop("branches", [])
         password = validated_data.pop("password", None)
         user = TrackingUser(**validated_data)
-        user.set_password(password or TrackingUser.objects.make_random_password())
+        user.set_password(password)
         user.save()
         user.companies.set(companies)
         user.branches.set(branches)
@@ -199,7 +200,52 @@ class CategorySerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class SaleSerializer(serializers.ModelSerializer):
+class SaleLineInputSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SaleItem
+        exclude = ["sale"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class PurchaseLineInputSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PurchaseItem
+        exclude = ["purchase"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class DocumentWithItemsSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        company = attrs.get("company") or getattr(self.instance, "company", None)
+        for line in attrs.get("items", []):
+            item = line.get("item")
+            if item and item.company_id != company.pk:
+                raise serializers.ValidationError({"items": "Item belongs to another company."})
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        lines = validated_data.pop("items", [])
+        document = super().create(validated_data)
+        for line in lines:
+            document.items.create(**line)
+        return document
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        lines = validated_data.pop("items", None)
+        document = super().update(instance, validated_data)
+        if lines is not None:
+            document.items.all().delete()
+            for line in lines:
+                document.items.create(**line)
+        return document
+
+
+class SaleSerializer(DocumentWithItemsSerializer):
+    items = SaleLineInputSerializer(many=True, required=False)
+
     class Meta:
         model = Sale
         fields = "__all__"
@@ -217,7 +263,9 @@ class ExpenseSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class PurchaseSerializer(serializers.ModelSerializer):
+class PurchaseSerializer(DocumentWithItemsSerializer):
+    items = PurchaseLineInputSerializer(many=True, required=False)
+
     class Meta:
         model = Purchase
         fields = "__all__"

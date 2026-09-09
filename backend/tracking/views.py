@@ -54,6 +54,12 @@ def json_id(value):
     return str(value) if value is not None else ""
 
 
+def pos_username(company, source_id):
+    # POS identifiers are UUIDs; Django auth IDs are database-generated integers.
+    # Namespace identities by company so a sync cannot take over a web login.
+    return f"pos-{company.pk.hex}-{canonical_uuid(source_id).hex}"
+
+
 def company_record_from_changes(changes, company_id):
     return next(
         (record for record in changes.get("companies", []) or [] if json_id(record.get("id")) == company_id),
@@ -143,6 +149,8 @@ def materialize_record(entity, record, company, branch):
     def related(model, value):
         if not value:
             return None
+        if model is TrackingUser:
+            return model.objects.filter(username=pos_username(company, value), companies=company).first()
         queryset = model.objects.filter(pk=canonical_uuid(value))
         if model is not TrackingUser:
             queryset = queryset.filter(company=company)
@@ -151,19 +159,12 @@ def materialize_record(entity, record, company, branch):
     def number(value, default=0):
         return value if value not in (None, "") else default
     if entity == "users":
-        role = record.get("role") if record.get("role") in {"owner", "admin", "manager", "cashier", "accountant", "inventory"} else "cashier"
-        username = record.get("username") or f"pos-{str(model_id)[:8]}"
-        user = TrackingUser.objects.filter(pk=model_id).first() or TrackingUser.objects.filter(username=username).first()
-        if not user:
-            user = TrackingUser.objects.create(
-                pk=model_id, username=username, name=record.get("name", ""), role=role,
-                permissions_json=record.get("permissions", []), is_active=record.get("status", "active") != "inactive",
-            )
-        user.name = record.get("name", user.name)
-        user.role = role
-        user.permissions_json = record.get("permissions", user.permissions_json)
-        user.is_active = record.get("status", "active") != "inactive"
-        user.save(update_fields=["name", "role", "permissions_json", "is_active"])
+        user, created = TrackingUser.objects.get_or_create(username=pos_username(company, raw_id))
+        if created:
+            user.set_unusable_password()
+        user.name = record.get("name") or record.get("username") or user.name
+        # Authentication permissions and passwords are managed on the server.
+        user.save()
         user.companies.add(company)
         if branch:
             user.branches.add(branch)
@@ -269,6 +270,8 @@ class ScopedModelViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        if self.queryset.model is Company:
+            return queryset if self.request.user.is_superuser else queryset.filter(pk__in=self.request.user.companies.values_list("pk", flat=True))
         if self.request.user.is_superuser:
             return queryset
         return queryset.filter(**{f"{self.company_field}__in": self.request.user.companies.values_list("pk", flat=True)})
@@ -281,6 +284,9 @@ class ScopedModelViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("You do not have access to this company")
         if branch and not has_branch_access(self.request.user, branch):
             raise PermissionDenied("You do not have access to this branch")
+        if branch and company and branch.company_id != company.pk:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"branch": "Branch belongs to another company."})
         serializer.save()
 
 
@@ -512,7 +518,26 @@ def overview(request):
     user = request.user
     company_qs = (Company.objects.all() if user.is_superuser else user.companies.all()).filter(status="active")
     branch_qs = Branch.objects.filter(company__in=company_qs, status="active")
-    scoped = lambda qs: qs if user.is_superuser else qs.filter(company__in=company_qs)
+    selected_companies = company_qs
+    company_id = request.query_params.get("companyId")
+    branch_id = request.query_params.get("branchId")
+    if company_id:
+        selected_companies = company_qs.filter(pk=canonical_uuid(company_id))
+        if not selected_companies.exists():
+            return Response({"error": "Company is unavailable or not assigned to your account."}, status=403)
+    if branch_id and not branch_qs.filter(pk=canonical_uuid(branch_id), company__in=selected_companies).exists():
+        return Response({"error": "Branch is unavailable in the selected company."}, status=403)
+
+    def scoped(qs):
+        qs = qs.filter(company__in=selected_companies)
+        if branch_id:
+            from django.db.models import Q
+            qs = qs.filter(Q(branch_id=canonical_uuid(branch_id)) | Q(branch__isnull=True))
+        return qs
+
+    users_qs = TrackingUser.objects.filter(companies__in=selected_companies).distinct()
+    if user.is_superuser and not company_id and not branch_id:
+        users_qs = TrackingUser.objects.all()
     principal = {
         "id": str(user.id),
         "name": user.display_name(),
@@ -520,7 +545,7 @@ def overview(request):
         "permissions": user.permissions_json or [],
     }
     record_sources = {
-        "users": TrackingUser.objects.filter(companies__in=company_qs).distinct(),
+        "users": users_qs,
         "inventory": scoped(InventoryItem.objects.all()),
         "categories": scoped(Category.objects.all()),
         "customers": scoped(Customer.objects.all()),
@@ -565,11 +590,13 @@ def overview(request):
     }
     return Response({
         "principal": principal,
+        "scope": {"companyId": company_id or "", "branchId": branch_id or ""},
+        "accessMessage": "" if company_qs.exists() else "No active company is assigned to this account. An administrator must assign company access before records can be viewed.",
         "companies": serialize_overview_rows(CompanySerializer, company_qs, "companies"),
         "branches": serialize_overview_rows(BranchSerializer, branch_qs, "branches"),
         "counts": {
             "companies": company_qs.count(), "branches": branch_qs.count(),
-            "users": TrackingUser.objects.filter(companies__in=company_qs).distinct().count(),
+            "users": users_qs.count(),
             "devices": scoped(Device.objects).count(), "inventory": scoped(InventoryItem.objects).count(),
             "categories": scoped(Category.objects).count(), "customers": scoped(Customer.objects).count(),
             "suppliers": scoped(Supplier.objects).count(), "sales": scoped(Sale.objects).count(),
